@@ -310,6 +310,47 @@ string has it replaced at parse time. This is what keeps the generated help docu
 baking in the directory of whoever last built the docs — a tested property, since the placeholder
 must survive in `format_help()` while resolving in the parsed arguments.
 
+---
+
+## Open questions carried forward
+
+### What belongs on the command line, and what only in the configuration file
+
+⬜ **Unresolved. Settle when the Phase 4 scripts are designed.**
+
+The governing intuition, from the user:
+
+- Things a user changes *often* — input and output file names above all — should be command-line
+  options.
+- Things that change rarely, or that implicitly depend on a set of other parameters (the
+  definition of the template library to ingest is the example), should require the configuration
+  file.
+- Either way, **the command-line surface should be considerably smaller than `DC3_express`'s**.
+
+**Why this is not yet decidable.** It depends on what a typical invocation looks like, and there
+is no working fitter to try one against.
+
+**Why it costs nothing to defer.** `resolve_par` is about ten lines and constrains nothing. If
+the answer turns out to be "parameters live only in the configuration file", the layering
+collapses to reading the file, and `resolve_par` reduces to `from_toml` with no call sites
+changed.
+
+**But it is already concrete**, because `dc3par.py` contains four path-like parameters that sit
+exactly on this line:
+
+| Parameter | Nature |
+|---|---|
+| `DC3Par.output_dir` | changes every run — reads as a command-line operand |
+| `TemplatePar.library` | the user's example of something that should be **config-only** |
+| `MaskPar.regions` | a file path, but one that changes with the science rather than the run |
+| `FitPar.constraints` | a file path, tied to a particular set of spectra |
+
+A sharper framing worth testing when the time comes: a `ParSet` holds **parameters** — things that
+configure *how* the code behaves — while `argparse` holds **operands**, the things a particular
+invocation acts *on*. Under that split, input and output paths would not be `ParSet` members at
+all, and `DC3Par.output_dir` is the one currently on the wrong side of it. That is a hypothesis,
+not a decision.
+
 ### The datamodel decision — ⬜ still open
 
 **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
@@ -455,3 +496,9 @@ Tracks the fourteen verification items in the plan.
 
   **Phase 1 is complete apart from the datamodel decision**, which the plan defers to prototyping
   `dc3/results.py` — genuinely Phase 4 work, since there is nothing yet to put in it.
+- **2026-09-17** — Recorded a second open question, raised by the user: which parameters belong on
+  the command line and which should require the configuration file, with the expectation that the
+  command-line surface be much smaller than `DC3_express`'s. Deferred to the Phase 4 script
+  design, since it depends on what a typical invocation looks like and there is no working fitter
+  to try one against. Noted that `resolve_par` does not constrain the answer, and that four
+  path-like parameters already in `dc3par.py` sit on the line in question.
