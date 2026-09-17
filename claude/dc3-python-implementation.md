@@ -218,7 +218,39 @@ upstream is the *only* documentation its parameters have.
 invisible in the file meant to document it. Now emitted commented out as `# max_nfev = <unset>`:
 discoverable, still valid TOML, and it round-trips as unset.
 
-### `dc3/par/dc3par.py` — ⬜ not started
+### `dc3/par/dc3par.py` — ✅ complete
+
+Nine parameter sets, all nested in `DC3Par`, all hand-written (they are `dc3`'s vocabulary, not a
+dependency's). 32 tests.
+
+**Hardwired C++ constants now exposed**, which is the point of the exercise — several are flagged
+"NEED TO REVISIT" in `doc/develop.txt` and cannot be revisited while compiled in:
+`correlate.apodization` and `cosine_percent` (was `apwin`/`cosper`), `convolve.min_sigma` (was
+`minsig`), `window.winfac`, `fit.x_scale` (was `lam`), and `correlate.length_factor` (the 2.2
+rule). A test pins the published/empirical defaults — `x_scale = [1, 100, 100]`,
+`min_sigma = 0.85`, `max_block = 8`, `nfwhm = 2.0`, `apodization = 'none'`, `length_factor = 2.2`,
+`grow_sigma = 2.0` — so that changing one is a deliberate act rather than a slip.
+
+**Two sign-encodings split into explicit parameters.** The C++ put two meanings in one number, and
+in both cases the value was unreadable without knowing the convention:
+
+| C++ | Here |
+|---|---|
+| `mvdiff < 0` means "in pixels" | `mask_vdiff` (≥ 0) plus `mask_vdiff_unit` ∈ `km/s`, `pixel` |
+| `miter < 0` means "iterate to convergence" | `mask_iterations`, with `null` meaning iterate |
+
+**One silent coercion turned into an error.** The C++ forced `citer = 0` when `corder < 0` and
+`corder = 0` when `citer == 0`, so a configuration could assert a continuum order that was never
+used. A `model_validator` now rejects the ambiguous combination instead.
+
+**Dropped:** `WAVE1`, `DISP` and `dispaxis`. These told the C++ which header keywords carried the
+wavelength WCS; `specutils` and `astropy.wcs` handle that at the I/O boundary (Phase 2), so
+carrying them would contradict the boundary/internals split.
+
+**A defect found by reading the generated config.** Nested sections were described twice — once by
+the parent's field description, once by the child's `default_comment`. `config_lines` now passes
+the parent description down as a fallback, so each section is described exactly once, by whichever
+is more specific.
 
 ### The datamodel decision — ⬜ still open
 
@@ -258,6 +290,9 @@ is a one-off.
 | 1 | Added `DC3CodingError` | Not in the plan. Separates faults in `dc3` itself from faults in its use, so a user seeing one knows whether to report a bug or fix their input. | ⬜ not yet |
 | 1 | `FuncPar` gains `api_doc`, required on every subclass | Not in the plan, which specified only that `FuncPar` exists. Its generated descriptions carry no information, so the pointer upstream is the only documentation its parameters have. | ⬜ not yet |
 | 1 | `FuncPar` uses a metaclass, not `__init_subclass__` | Forced by pydantic: fields are collected from the class namespace during class creation, before `__init_subclass__` runs. Declaration syntax is unchanged. | ⬜ not yet |
+| 1 | `mvdiff`/`miter` sign-encodings split into explicit parameters | The plan said only to expose the hardwired constants. Encoding units and a mode in a number's sign makes a configuration unreadable without knowing the convention. | ⬜ not yet |
+| 1 | `WAVE1`, `DISP`, `dispaxis` dropped | The plan lists the 15 C++ keys as the basis for `dc3par`. These three name header keywords for WCS parsing, which `specutils`/`astropy.wcs` do at the I/O boundary; keeping them would contradict the Phase 2 boundary/internals split. | ⬜ not yet |
+| 1 | `alambda` dropped | It is the damping parameter of the hand-rolled Levenberg–Marquardt being replaced; `scipy.optimize.least_squares` has no counterpart. `lam` survives as `fit.x_scale`, which is meaningful and is published. | ⬜ not yet |
 
 ---
 
@@ -321,3 +356,14 @@ Tracks the fourteen verification items in the plan.
   reads as plain text while the rst path keeps the link. Fixed a discoverability defect found by
   inspecting the emitted TOML: parameters defaulting to `None` were omitted entirely, hiding
   declared knobs such as `max_nfev`; they are now emitted commented out.
+- **2026-09-17** — **`dc3par.py` complete** (91 tests in total). Nine parameter sets, all nested in
+  `DC3Par`. Recorded which hardwired C++ constants are now exposed and which published or
+  empirically justified defaults are pinned by test. Four further deviations logged: the
+  `mvdiff`/`miter` sign-encodings split into explicit parameters; `WAVE1`/`DISP`/`dispaxis`
+  dropped as WCS concerns belonging to the I/O boundary; `alambda` dropped as an artefact of the
+  hand-rolled optimizer being replaced; and the continuum's silent order/iteration coercion turned
+  into a validation error. Fixed a second TOML defect found by reading the generated file: nested
+  sections were described twice, by the parent's field description and the child's
+  `default_comment`. Added three formatting conventions to `CLAUDE.md` at the user's request —
+  multi-line constructs put their contents on the following line with the closing bracket aligned
+  with the opener.

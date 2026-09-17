@@ -379,7 +379,9 @@ class ParSet(BaseModel):
     # ------------------------------------------------------------------
     # TOML
     # ------------------------------------------------------------------
-    def config_lines(self, section_name=None, exclude_defaults=False, include_descr=True):
+    def config_lines(
+        self, section_name=None, exclude_defaults=False, include_descr=True, fallback_comment=None
+    ):
         """
         Generate the lines of a TOML configuration file for this parameter set.
 
@@ -394,6 +396,11 @@ class ParSet(BaseModel):
             Omit parameters whose value is unchanged from the default.
         include_descr : bool, optional
             Include each parameter's description as a comment.
+        fallback_comment : str, optional
+            Comment describing this section, used when it declares no
+            :attr:`default_comment` of its own.  Supplied by the parent when
+            recursing, so that a nested section is described exactly once, by
+            whichever of the two descriptions is the more specific.
 
         Returns
         -------
@@ -413,8 +420,9 @@ class ParSet(BaseModel):
             )
 
         lines = []
-        if include_descr and self.default_comment is not None:
-            lines += _comment_lines(self.default_comment)
+        comment = self.default_comment if self.default_comment is not None else fallback_comment
+        if include_descr and comment is not None:
+            lines += _comment_lines(comment)
         if include_descr and self.api_doc is not None:
             lines += _comment_lines(f'See {_plain_reference(self.api_doc)}')
         lines += [f'[{_section}]']
@@ -442,17 +450,20 @@ class ParSet(BaseModel):
             if value is None:
                 continue
             lines += ['']
-            descr = type(self).model_fields[key].description
-            if include_descr and descr is not None:
-                lines += _comment_lines(descr)
+            # The description is passed down rather than emitted here, so that
+            # the subsection is described exactly once -- by its own
+            # default_comment where it has one, and by this description
+            # otherwise.
             lines += value.config_lines(
                 section_name=f'{_section}.{key}', exclude_defaults=exclude_defaults,
-                include_descr=include_descr
+                include_descr=include_descr,
+                fallback_comment=type(self).model_fields[key].description
             )
         return lines
 
-    def to_toml(self, cfg_file=None, section_name=None, exclude_defaults=False,
-                include_descr=True):
+    def to_toml(
+        self, cfg_file=None, section_name=None, exclude_defaults=False, include_descr=True
+    ):
         """
         Write the parameter set to a TOML configuration file.
 

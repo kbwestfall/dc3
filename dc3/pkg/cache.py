@@ -179,8 +179,9 @@ def _build_remote_url(f_name, f_type):
     return reduce(lambda a, b: urljoin(a, b), parts)
 
 
-def fetch_remote_file(filename, filetype, force_update=False, full_url=None, return_none=False,
-                      timeout=10):
+def fetch_remote_file(
+    filename, filetype, force_update=False, full_url=None, return_none=False, timeout=10
+):
     """
     Use :mod:`astropy.utils.data` to fetch a file from the remote host or cache.
 

@@ -208,8 +208,9 @@ class DC3DataPath:
             return f, _format
         return f
 
-    def get_file_path(self, data_file, force_update=False, to_pkg=None, return_format=False,
-                      return_none=False):
+    def get_file_path(
+        self, data_file, force_update=False, to_pkg=None, return_format=False, return_none=False
+    ):
         """
         Return the path to a file.
 
