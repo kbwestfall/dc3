@@ -23,9 +23,6 @@ restores the correct result exactly.
 | `scipy` | 1.18.1 |
 | Python | 3.13.14 |
 
-`scipy` is used only by the attached script, for the pixelated line profile in
-the last check below; it is already a dependency of `ppxf`.
-
 ## Reproduction
 
 `ppxf_varsmooth_offbyone.py` is attached; it depends only on `numpy`, `scipy`
@@ -33,10 +30,11 @@ and `ppxf`. It convolves a well-resolved Gaussian (σ = 4 px) and recovers the
 applied kernel as the second moment of the output differenced in quadrature
 against the input.
 
-The input has `N` = 800 samples. `unif` is whether `sig_x/np.gradient(x)` is
-exactly constant, and `span − (N−1)k` is the amount by which the stretched
-coordinate exceeds `(N−1)*oversample` — the quantity that decides whether
-`ceil` rounds up to the correct sample count.
+Results from various scenarios are given in the Table below.  The input has `N`
+= 800 samples. `unif` is whether `sig_x/np.gradient(x)` is exactly constant, and
+`span − (N−1)k` is the amount by which the stretched coordinate exceeds
+`(N−1)*oversample` — the quantity that decides whether `ceil` rounds up to the
+correct sample count.
 
 | | case | unif | span − (N−1)k | `n` | requested | applied |
 |---|---|---|---|---|---|---|
@@ -94,7 +92,7 @@ denser than the input, which costs nothing. In the uniform case it restores the
 identity mapping, which is what the passing rows above demonstrate: they differ
 from the failing rows *only* in the value of `n`.
 
-## Why it matters
+## When it happens
 
 Two ways an exactly uniform `sig` arises in ordinary use:
 
@@ -102,7 +100,7 @@ Two ways an exactly uniform `sig` arises in ordinary use:
    with the same literal, which forces exact uniformity. This is why a request of
    0.001, 0.05 or 0.09 px is applied as ≈ 0.71 px rather than as the requested
    value. Note that this is also not the 0.1 px that the clip on its own would
-   suggest, so a caller reading the source may still be surprised by the result.
+   suggest.
 
 2. **A genuinely constant kernel on a regular abscissa.** This is not exotic: it
    is what one gets when two spectral resolutions differ by a constant, which is
@@ -116,10 +114,10 @@ the difference.
 ## Notes
 
 - **The result does not depend on the probe.** The measurement above uses a
+
   Gaussian evaluated at the pixel centres. Repeating it with a Gaussian
-  *integrated over the pixel width* — what a spectrograph actually records —
-  gives the same answer to four decimal places, for probe widths from 1 to 8
-  pixels:
+  *integrated over the pixel width* gives the same answer to four decimal
+  places, for probe widths from 1 to 8 pixels:
 
   | Probe σ (px) | Profile | Applied, as-is | Applied, `n` restored |
   |---|---|---|---|
