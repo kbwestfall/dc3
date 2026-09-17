@@ -71,6 +71,8 @@ These are easy to violate accidentally and expensive to unpick.
 - **Lines are at most 99 characters.** Enforced by `tox -e codestyle`, which
   configures `pycodestyle` from `tox.ini` to check `E9` (syntax/runtime errors)
   and `E501` (line length) and nothing else.
+- **Avoid `import ... as`.** Industry-standard aliases (`import numpy as np`)
+  are fine; otherwise import the module or name directly.
 - Docstrings are **NumPy style**, rendered by `numpydoc`. References to objects
   in other packages take an **explicit role** so that intersphinx resolves them
   — `` :class:`numpy.ndarray` ``, `` :func:`astropy.stats.sigma_clip` `` — not

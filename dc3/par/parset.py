@@ -494,6 +494,47 @@ class ParSet(BaseModel):
         return content
 
     @classmethod
+    def config_dict(cls, cfg_file, section_name=None):
+        """
+        Read this parameter set's section of a TOML file, without validating it.
+
+        This exists so that a configuration file can be *layered* with
+        command-line overrides before anything is validated; see
+        :func:`from_layers`.  Validating the file on its own would reject a
+        configuration that is only incomplete because the rest of it arrives
+        from the command line.
+
+        Parameters
+        ----------
+        cfg_file : str, :class:`pathlib.Path`
+            The file to read.
+        section_name : str, optional
+            The top-level section to read.  If None, use :attr:`default_key`;
+            if that is also None, the whole document is used.
+
+        Returns
+        -------
+        dict
+            The contents of the section.
+
+        Raises
+        ------
+        DC3ParameterError
+            Raised if the requested section is not in the file.
+        """
+        with open(cfg_file, 'rb') as f:
+            doc = tomllib.load(f)
+        _section = cls.default_key if section_name is None else section_name
+        if _section is None:
+            return doc
+        if _section not in doc:
+            raise DC3ParameterError(
+                f'Configuration file {cfg_file} has no [{_section}] section.  '
+                f'Sections found: {list(doc.keys())}.'
+            )
+        return doc[_section]
+
+    @classmethod
     def from_toml(cls, cfg_file, section_name=None):
         """
         Instantiate from a TOML configuration file.
@@ -516,17 +557,7 @@ class ParSet(BaseModel):
         DC3ParameterError
             Raised if the requested section is not in the file.
         """
-        with open(cfg_file, 'rb') as f:
-            doc = tomllib.load(f)
-        _section = cls.default_key if section_name is None else section_name
-        if _section is None:
-            return cls.model_validate(doc)
-        if _section not in doc:
-            raise DC3ParameterError(
-                f'Configuration file {cfg_file} has no [{_section}] section.  '
-                f'Sections found: {list(doc.keys())}.'
-            )
-        return cls.model_validate(doc[_section])
+        return cls.model_validate(cls.config_dict(cfg_file, section_name=section_name))
 
     # ------------------------------------------------------------------
     # FITS headers

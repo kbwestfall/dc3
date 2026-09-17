@@ -56,8 +56,10 @@ if __name__ == '__main__':
         (scipy.signal.windows.tukey, 'scipy.signal.windows.tukey'),
     ]
 
-    import numpy.polynomial.legendre as L
-    targets += [(L.Legendre.fit, 'numpy.polynomial.legendre.Legendre.fit')]
+    import numpy.polynomial.legendre
+    targets += [
+        (numpy.polynomial.legendre.Legendre.fit, 'numpy.polynomial.legendre.Legendre.fit')
+    ]
 
     from astropy.stats import sigma_clip
     targets += [(sigma_clip, 'astropy.stats.sigma_clip')]

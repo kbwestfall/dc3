@@ -58,5 +58,11 @@ Functionality/Performance Improvements and Additions
   operations on raw integer values, and ``BitMaskArray`` for a mask array whose
   flags are read and set by name.
 
+- Added ``dc3.scripts.scriptbase.ScriptBase``, the base class for the
+  command-line scripts, which resolves a parameter set from a TOML
+  configuration file layered with command-line overrides.
+
+- Added the ``dc3_version`` script.
+
 - Added ``DC3CodingError``, raised for a fault in ``dc3`` itself rather than in
   how it is used.

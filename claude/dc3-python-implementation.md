@@ -4,8 +4,8 @@
 what was verified, and — most importantly — **where the implementation departed from the plan and
 why**. The plan says what should happen; this says what did.
 
-**Status:** Phase 0 complete. Phase 1 in progress — `dc3/pkg/` built and installed;
-`dc3/par/` not yet started.
+**Status:** Phase 0 complete. **Phase 1 complete** apart from the datamodel decision, which the
+plan defers to prototyping `dc3/results.py` in Phase 4. 188 tests passing.
 
 ---
 
@@ -289,6 +289,27 @@ compare what the file says against the declaration and **refuse** on disagreemen
 under different definitions is still perfectly readable — it just means something else — so this
 is the one failure mode that cannot be allowed to pass quietly.
 
+### `dc3/scripts/scriptbase.py` — ✅ complete
+
+`ScriptBase` with `entry_point`, `get_parser`, `init_log`, `expandpath` and `configure_matplotlib`,
+adapted from PypeIt. `dc3_version` is written as the first real script, so one entry point is
+registered and the whole chain is exercised. 18 tests.
+
+**`SmartFormatter` not carried over**, at the user's request.
+
+**Added beyond PypeIt: `resolve_par`**, which ties Phase 1 together. It reads the configuration
+file with the new `ParSet.config_dict` — deliberately *without* validating it — and layers it with
+command-line overrides through `from_layers` before validating the result. Validating the file on
+its own would reject a configuration whose missing half arrives from the command line, which is
+the normal way of using both. There is a test for exactly that: a file specifying Gauss-Hermite
+moments *and* a pedestal, which is invalid on its own and valid once the command line clears the
+pedestal.
+
+**The `'current working directory'` placeholder is kept.** An argument defaulting to that exact
+string has it replaced at parse time. This is what keeps the generated help documentation from
+baking in the directory of whoever last built the docs — a tested property, since the placeholder
+must survive in `format_help()` while resolving in the parsed arguments.
+
 ### The datamodel decision — ⬜ still open
 
 **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
@@ -423,3 +444,14 @@ Tracks the fourteen verification items in the plan.
   the mechanism. Also made over-long descriptions truncate deliberately rather than letting
   `astropy` truncate them with a warning on every write; the truncation point depends on the bit
   name's length, so it is swept across name and description sizes in the tests.
+- **2026-09-17** — **`dc3/scripts/scriptbase.py` complete, and with it Phase 1's lifted modules**
+  (188 tests in total). `SmartFormatter` was dropped at the user's request. Added `resolve_par`
+  and the supporting `ParSet.config_dict`, which reads a configuration file without validating it
+  so that file and command line can be layered before validation — the case that motivates it is a
+  file valid only once the command line completes it. `dc3_version` is written as the first real
+  script and its entry point registered, so the console-script chain is exercised rather than
+  assumed. Added the convention against `import ... as` outside industry-standard aliases; two
+  existing uses were removed.
+
+  **Phase 1 is complete apart from the datamodel decision**, which the plan defers to prototyping
+  `dc3/results.py` — genuinely Phase 4 work, since there is nothing yet to put in it.

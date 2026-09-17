@@ -55,7 +55,7 @@ else:
 # NOTE: To avoid circular imports, do not import anything from dc3 into this
 # module!  Only import from modules in this directory (dc3/pkg).
 from .exceptions import DC3Error
-from .version import version as __version__
+from .version import version
 
 
 __DC3_DATA__ = resources.files('dc3') / 'data'
@@ -120,7 +120,7 @@ def git_branch():
     """
     repo = git_repo()
     if repo is None:
-        return __DC3_DEFAULT_BRANCH__ if '.dev' in __version__ else __version__
+        return __DC3_DEFAULT_BRANCH__ if '.dev' in version else version
     return str(repo.head.target) if repo.head_is_detached else str(repo.head.shorthand)
 
 

@@ -88,6 +88,7 @@ Documentation = "https://dc3.readthedocs.io/"
 # port plan, Phase 4, for the full intended set (dc3_fit, dc3_xcorr, dc3_qa,
 # dc3_mcerr, dc3_benchmark, dc3_stage_testdata).
 [project.scripts]
+dc3_version = "dc3.scripts.version:Version.entry_point"
 
 [build-system]
 requires = [
