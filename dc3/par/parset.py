@@ -32,6 +32,7 @@ written against the other:
 .. include:: ../include/links.rst
 """
 
+import re
 import shutil
 import textwrap
 import tomllib
@@ -205,15 +206,26 @@ class ParSet(BaseModel):
     and FITS keywords are limited to 8.
     """
 
-    doc_url: ClassVar[str | None] = None
+    api_doc: ClassVar[str | None] = None
     """
-    A pointer to authoritative documentation for these parameters.
+    A pointer to the authoritative API documentation for these parameters.
 
-    This is None for parameter sets that ``dc3`` owns, which document themselves
-    through their ``description`` fields.  It is set for
-    :class:`~dc3.par.funcpar.FuncPar` subclasses, which wrap a third-party
-    function and deliberately defer to *its* documentation rather than
-    reproducing it.  See :class:`~dc3.par.funcpar.FuncPar`.
+    Two forms are expected, according to what the parameter set describes:
+
+    - **Parameter sets ``dc3`` owns** use Sphinx syntax referring to this
+      package's own API documentation, e.g.
+      ``':class:`~dc3.par.dc3par.TemplatePar`'``.
+    - **:class:`~dc3.par.funcpar.FuncPar` subclasses**, which wrap a third-party
+      function and defer to *its* documentation rather than reproducing it, use
+      either an intersphinx cross-reference, e.g.
+      ``':func:`scipy.optimize.least_squares`'``, or a full URL where the
+      dependency publishes no object inventory.  ``ppxf`` is the case that
+      forces the URL fallback: it ships no Sphinx inventory.
+
+    Emitted by :func:`to_rst_table`, where Sphinx resolves it to a link, and by
+    :func:`config_lines` as a comment above the section header, with the role
+    markup stripped by :func:`_plain_reference` since it is read as plain text
+    there.
     """
 
     # ------------------------------------------------------------------
@@ -403,8 +415,8 @@ class ParSet(BaseModel):
         lines = []
         if include_descr and self.default_comment is not None:
             lines += _comment_lines(self.default_comment)
-        if include_descr and self.doc_url is not None:
-            lines += _comment_lines(f'See {self.doc_url}')
+        if include_descr and self.api_doc is not None:
+            lines += _comment_lines(f'See {_plain_reference(self.api_doc)}')
         lines += [f'[{_section}]']
 
         nested = type(self).nested()
@@ -412,14 +424,18 @@ class ParSet(BaseModel):
             if key in nested:
                 continue
             value = getattr(self, key)
-            if value is None:
-                # TOML has no null; an unset parameter is simply absent.
-                continue
             if exclude_defaults and value == f.default:
                 continue
             if include_descr and f.description is not None:
                 lines += _comment_lines(f.description)
-            lines += [f'{key} = {_toml_value(value)}']
+            if value is None:
+                # TOML has no null, so a None-valued parameter cannot be
+                # written.  Emit it commented out rather than omitting it: the
+                # parameter stays discoverable in the file that is supposed to
+                # document it, and reading the file back leaves it unset.
+                lines += [f'# {key} = <unset>']
+            else:
+                lines += [f'{key} = {_toml_value(value)}']
 
         for key in nested:
             value = getattr(self, key)
@@ -669,11 +685,8 @@ class ParSet(BaseModel):
         output = [f'.. _{cls.__name__.lower()}:', '']
         output += [f'{cls.__name__} Parameters', '-' * len(f'{cls.__name__} Parameters'), '']
         output += [f'Class Instantiation: :class:`~{cls.__module__}.{cls.__name__}`', '']
-        if cls.doc_url is not None:
-            output += [
-                f'Parameters are those of the wrapped function; see {cls.doc_url} for their '
-                'meaning.', ''
-            ]
+        if cls.api_doc is not None:
+            output += [f'API documentation: {cls.api_doc}', '']
         output += [_rst_table(rows), '']
         for sub in new_parsets:
             output += ['----', '']
@@ -713,6 +726,38 @@ class ParSet(BaseModel):
 # ----------------------------------------------------------------------
 # Module-level helpers
 # ----------------------------------------------------------------------
+def _plain_reference(reference):
+    """
+    Strip Sphinx role markup from a documentation reference.
+
+    :attr:`ParSet.api_doc` holds either a Sphinx role or a bare URL.  A role
+    renders as a link in reStructuredText, but is read literally in a TOML
+    comment, where the markup is noise in a file a user edits by hand.  Both the
+    ``:role:`target``` and ``:role:`text <target>``` forms are handled, and a
+    leading ``~`` -- which tells Sphinx to abbreviate the displayed name -- is
+    dropped.
+
+    Parameters
+    ----------
+    reference : str
+        The reference to convert.
+
+    Returns
+    -------
+    str
+        The reference as plain text.  A value that is not a Sphinx role, such as
+        a URL, is returned unchanged.
+    """
+    match = re.match(r'^:[\w.+:-]+:`(.+)`$', reference.strip())
+    if match is None:
+        return reference
+    target = match.group(1)
+    explicit = re.match(r'^.*<(.+)>$', target)
+    if explicit is not None:
+        target = explicit.group(1)
+    return target.lstrip('~')
+
+
 def _comment_lines(comment, full_width=78):
     """
     Wrap a description into TOML comment lines.

@@ -14,10 +14,12 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from astropy.io import fits
+from ppxf import ppxf_util
 from pydantic import Field, ValidationError, model_validator
 import pytest
 
-from dc3.par.parset import ParSet, _is_parset
+from dc3.par.funcpar import FuncPar
+from dc3.par.parset import ParSet, _is_parset, _plain_reference
 from dc3.pkg.exceptions import DC3CodingError, DC3ParameterError
 
 
@@ -28,10 +30,13 @@ def check_declaration(cls):
     """
     Check that a :class:`~dc3.par.parset.ParSet` subclass is declared completely.
 
-    Every parameter must carry a description, since the generated documentation
-    and the commented TOML output are built from it, and a parameter set that
-    declares a ``card_prefix`` must keep it short enough to leave room for the
-    suffix character in an 8-character FITS keyword.
+    Three things are required.  Every parameter must carry a description, since
+    the generated documentation and the commented TOML output are built from it.
+    A parameter set that declares a ``card_prefix`` must keep it short enough to
+    leave room for the suffix character in an 8-character FITS keyword.  And a
+    :class:`~dc3.par.funcpar.FuncPar` must declare an ``api_doc``, because its
+    generated descriptions say nothing beyond naming the wrapped function, so
+    the pointer upstream is the only documentation its users get.
 
     Parameters
     ----------
@@ -56,6 +61,13 @@ def check_declaration(cls):
         raise DC3CodingError(
             f'card_prefix for {cls.__name__} is {len(cls.card_prefix)} characters; a FITS '
             'keyword allows 8, and one is reserved for the suffix.'
+        )
+    # FuncPar itself is abstract and wraps nothing, so it is exempt.
+    if issubclass(cls, FuncPar) and cls.func is not None and cls.api_doc is None:
+        raise DC3CodingError(
+            f'{cls.__name__} wraps {cls.func.__name__} but declares no api_doc.  A FuncPar '
+            'defers to the wrapped function\'s documentation instead of reproducing it, so '
+            'that pointer is the only documentation its parameters have.'
         )
 
 
@@ -191,6 +203,16 @@ def test_check_declaration_catches_missing_description():
 
     with pytest.raises(DC3CodingError, match='missing descriptions'):
         check_declaration(_Undocumented)
+
+
+def test_check_declaration_catches_funcpar_without_api_doc():
+    """A FuncPar that does not point upstream has no documentation at all."""
+    class Undocumented(FuncPar):
+        func = ppxf_util.varsmooth
+        kw_subset = ['oversample']
+
+    with pytest.raises(DC3CodingError, match='declares no api_doc'):
+        check_declaration(Undocumented)
 
 
 def test_check_declaration_catches_long_card_prefix():
@@ -343,6 +365,33 @@ def test_toml_exclude_defaults():
         'A parameter left at its default was emitted despite exclude_defaults'
 
 
+def test_toml_keeps_none_valued_parameters_discoverable(tmp_path):
+    """
+    A parameter whose value is None is emitted commented out, not omitted.
+
+    TOML has no null, so such a parameter cannot be written as an assignment.
+    Omitting it entirely would hide a knob from the file that is supposed to
+    document it, so it is emitted as a comment instead; reading the file back
+    leaves it unset.
+    """
+    class Nullable(ParSet):
+        default_key = 'nullable'
+        max_nfev: Annotated[int | None, Field(default=None, description='An optional limit.')]
+        ftol: Annotated[float, Field(default=1e-8, description='A tolerance.')]
+
+    content = Nullable().to_toml()
+    assert '# max_nfev = <unset>' in content, \
+        'A None-valued parameter was omitted entirely, making it undiscoverable'
+    assert 'An optional limit.' in content, \
+        'A None-valued parameter lost its description as well as its value'
+
+    # It is still a comment, so the value round-trips as None
+    f = tmp_path / 'nullable.toml'
+    f.write_text(content)
+    assert Nullable.from_toml(f).max_nfev is None, \
+        'The commented placeholder was parsed as a value rather than left unset'
+
+
 def test_from_toml_missing_section(tmp_path):
     """Asking for a section that is not in the file is an error, not a default."""
     f = tmp_path / 'other.toml'
@@ -493,6 +542,62 @@ def test_introspection():
         'field_default() did not report the declared default'
     assert ExampleDC3Par.field_default('output_dir').endswith('()'), \
         'field_default() should name the default_factory, since there is no fixed default value'
+
+
+# ----------------------------------------------------------------------
+# api_doc
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    'reference,expected',
+    [
+        # Sphinx roles, which must lose their markup for plain-text output
+        (':class:`~dc3.par.dc3par.TemplatePar`', 'dc3.par.dc3par.TemplatePar'),
+        (':func:`scipy.optimize.least_squares`', 'scipy.optimize.least_squares'),
+        (':py:func:`numpy.polynomial.legendre.Legendre.fit`',
+         'numpy.polynomial.legendre.Legendre.fit'),
+        # The explicit `text <target>` form resolves to the target
+        (':func:`the fitter <scipy.optimize.least_squares>`', 'scipy.optimize.least_squares'),
+        # Anything that is not a role passes through untouched
+        ('https://pypi.org/project/ppxf/', 'https://pypi.org/project/ppxf/'),
+        ('plain text', 'plain text'),
+    ]
+)
+def test_plain_reference(reference, expected):
+    """Sphinx role markup is stripped; URLs and plain text are left alone."""
+    assert _plain_reference(reference) == expected, \
+        f'{reference!r} was not reduced to its plain-text target'
+
+
+def test_api_doc_in_toml_is_plain_text():
+    """A Sphinx role is emitted into a TOML comment without its markup."""
+    class Documented(ParSet):
+        default_key = 'documented'
+        api_doc = ':func:`scipy.optimize.least_squares`'
+        xtol: Annotated[float, Field(default=1e-8, description='A parameter.')]
+
+    content = Documented().to_toml()
+    assert '# See scipy.optimize.least_squares' in content, \
+        'api_doc was not emitted as a plain-text comment above the section'
+    assert ':func:' not in content, \
+        'Sphinx role markup leaked into the TOML comment, where it is read literally'
+
+
+def test_api_doc_in_rst_keeps_the_role():
+    """The rst table keeps the role, so that Sphinx can resolve it to a link."""
+    class Documented(ParSet):
+        api_doc = ':func:`scipy.optimize.least_squares`'
+        xtol: Annotated[float, Field(default=1e-8, description='A parameter.')]
+
+    content = '\n'.join(Documented.to_rst_table())
+    assert ':func:`scipy.optimize.least_squares`' in content, \
+        'api_doc role was stripped in rst output, where it should resolve to a link'
+
+
+def test_api_doc_is_optional():
+    """A parameter set without an api_doc emits no reference line."""
+    content = ExampleTemplatePar().to_toml()
+    assert '# See ' not in content, \
+        'A reference comment was emitted for a parameter set that declares no api_doc'
 
 
 def test_info_runs(capsys):
