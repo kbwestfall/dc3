@@ -16,40 +16,47 @@ restores the correct result exactly.
 
 ## Environment
 
-- `ppxf` 9.5.0
-- `numpy` 2.5.3
-- Python 3.13
+| Package | Version |
+|---|---|
+| `ppxf` | 9.5.0 |
+| `numpy` | 2.5.3 |
+| `scipy` | 1.18.1 |
+| Python | 3.13.14 |
+
+`scipy` is used only by the attached script, for the pixelated line profile in
+the last check below; it is already a dependency of `ppxf`.
 
 ## Reproduction
 
-`ppxf_varsmooth_offbyone.py` is attached; it depends only on `numpy` and `ppxf`.
-It convolves a well-resolved Gaussian (σ = 4 px) and recovers the applied kernel
-as the second moment of the output differenced in quadrature against the input.
+`ppxf_varsmooth_offbyone.py` is attached; it depends only on `numpy`, `scipy`
+and `ppxf`. It convolves a well-resolved Gaussian (σ = 4 px) and recovers the
+applied kernel as the second moment of the output differenced in quadrature
+against the input.
 
-```
-      case                                           unif  span - (N-1)k      n
+The input has `N` = 800 samples. `unif` is whether `sig_x/np.gradient(x)` is
+exactly constant, and `span − (N−1)k` is the amount by which the stretched
+coordinate exceeds `(N−1)*oversample` — the quantity that decides whether
+`ceil` rounds up to the correct sample count.
 
-  Well above the 0.1-pixel clip, so undersampling is not in play:
-  BUG  uniform 0.5 px, exactly uniform abscissa      True     0.000e+00    799   want 0.500, got 0.867 px
-  ok     ... one interior element changed by 1e-12  False     1.023e-12    800   want 0.500, got 0.500 px
-  ok     ... or the same request on a log abscissa  False     5.497e-09    800   want 0.500, got 0.500 px
+| | case | unif | span − (N−1)k | `n` | requested | applied |
+|---|---|---|---|---|---|---|
+| | **Well above the 0.1-pixel clip, so undersampling is not in play** | | | | | |
+| ❌ | uniform 0.5 px, exactly uniform abscissa | True | `0.000e+00` | 799 | 0.500 | **0.867** |
+| ✅ | … one interior element changed by 1e-12 | False | `1.023e-12` | 800 | 0.500 | 0.500 |
+| ✅ | … or the same request on a log abscissa | False | `5.497e-09` | 800 | 0.500 | 0.500 |
+| | **Oversampling does not help; it trades one error for another** | | | | | |
+| ❌ | uniform 0.5 px, `oversample=2` | True | `0.000e+00` | 1598 | 0.500 | **0.707** |
+| ❌ | uniform 0.5 px, `oversample=4` | True | `0.000e+00` | 3196 | 0.500 | **0.661** |
+| ❌ | uniform 0.5 px, `oversample=8` | True | `0.000e+00` | 6392 | 0.500 | **0.649** |
+| | **Below the clip, which forces exact uniformity and so always triggers it** | | | | | |
+| ❌ | uniform 0.001 px on a log abscissa | True | `0.000e+00` | 799 | 0.001 | **0.714** |
+| ❌ | uniform 0.05 px on a log abscissa | True | `0.000e+00` | 799 | 0.050 | **0.714** |
+| ❌ | uniform 0.09 px on a log abscissa | True | `0.000e+00` | 799 | 0.090 | **0.714** |
+| ✅ | uniform 0.1 px on a log abscissa (at the clip) | False | `1.864e-09` | 800 | 0.100 | 0.100 |
+| | **Control: the scalar `sig_x` branch builds no stretched grid at all** | | | | | |
+| ✅ | scalar `sig_x = 0.5` | — | — | — | 0.500 | 0.500 |
 
-  Oversampling does not help; it trades one error for another:
-  BUG  uniform 0.5 px, oversample=2                  True     0.000e+00   1598   want 0.500, got 0.707 px
-  BUG  uniform 0.5 px, oversample=4                  True     0.000e+00   3196   want 0.500, got 0.661 px
-  BUG  uniform 0.5 px, oversample=8                  True     0.000e+00   6392   want 0.500, got 0.649 px
-
-  Below the clip, which forces exact uniformity and so always triggers it:
-  BUG  uniform 0.001 px on a log abscissa            True     0.000e+00    799   want 0.001, got 0.714 px
-  BUG  uniform 0.05 px on a log abscissa             True     0.000e+00    799   want 0.050, got 0.714 px
-  BUG  uniform 0.09 px on a log abscissa             True     0.000e+00    799   want 0.090, got 0.714 px
-  ok   uniform 0.1 px on a log abscissa (at the clip) False     1.864e-09    800   want 0.100, got 0.100 px
-
-  Control: the scalar sig_x branch builds no stretched grid at all:
-  ok   scalar sig_x = 0.5                                n/a (scalar branch)   want 0.500, got 0.500 px
-```
-
-Every failing row has `span - (N-1)k` of **exactly zero**; every passing row has a
+Every failing row has `span − (N−1)k` of **exactly zero**; every passing row has a
 tiny positive excess that happens to push `ceil` up to the correct count.
 
 ## Root cause
@@ -114,15 +121,14 @@ the difference.
   gives the same answer to four decimal places, for probe widths from 1 to 8
   pixels:
 
-  ```
-      probe sigma     profile      as-is   n restored
-              1.0     sampled     0.8667       0.5000
-              1.0   pixelated     0.8667       0.5000
-              4.0     sampled     0.8666       0.5000
-              4.0   pixelated     0.8666       0.5000
-              8.0     sampled     0.8662       0.5000
-              8.0   pixelated     0.8662       0.5000
-  ```
+  | Probe σ (px) | Profile | Applied, as-is | Applied, `n` restored |
+  |---|---|---|---|
+  | 1.0 | sampled | 0.8667 | 0.5000 |
+  | 1.0 | pixelated | 0.8667 | 0.5000 |
+  | 4.0 | sampled | 0.8666 | 0.5000 |
+  | 4.0 | pixelated | 0.8666 | 0.5000 |
+  | 8.0 | sampled | 0.8662 | 0.5000 |
+  | 8.0 | pixelated | 0.8662 | 0.5000 |
 
   This is expected: pixelization adds dx²/12 to the variance of the input and
   the output alike, so it cancels in the quadrature difference. It is included

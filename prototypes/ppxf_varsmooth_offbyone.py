@@ -11,7 +11,9 @@ The defect is independent of the kernel width, and is not a sampling effect: a
 perturbation of one part in 1e-12 to a single element of ``sig_x`` -- which
 changes nothing physical -- restores the correct answer exactly.
 
-Depends only on ``numpy`` and ``ppxf``.
+Depends only on ``numpy``, ``scipy`` and ``ppxf``.  ``scipy`` is used solely for
+the pixelated line profile in the last check, and is already a dependency of
+``ppxf``.
 
 Run:  python ppxf_varsmooth_offbyone.py
 """
