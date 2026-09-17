@@ -71,6 +71,10 @@ These are easy to violate accidentally and expensive to unpick.
 - **Lines are at most 99 characters.** Enforced by `tox -e codestyle`, which
   configures `pycodestyle` from `tox.ini` to check `E9` (syntax/runtime errors)
   and `E501` (line length) and nothing else.
+- **Imports go at the top of the file.** The one exception is a script: the
+  imports a `ScriptBase` subclass needs belong inside its `main`, because every
+  registered entry point is imported when the console scripts are resolved, so
+  a module-level import of the heavy machinery makes `--help` pay for it.
 - **Avoid `import ... as`.** Industry-standard aliases (`import numpy as np`)
   are fine; otherwise import the module or name directly.
 - **Any docstring containing a backslash is an r-string** (`r"""`), so that
@@ -93,6 +97,17 @@ These are easy to violate accidentally and expensive to unpick.
   source project and file.
 
 ## Environment
+
+**Development is on macOS.** Shell commands must work with the BSD userland, not
+the GNU one. The differences that actually bite:
+
+| Tool | Watch for |
+|---|---|
+| `sed` | No `\b` word boundary, and `-i` requires an explicit backup suffix (`sed -i ''`). For anything beyond a literal substitution, use Python instead. |
+| `grep` | Use `-E` for extended regular expressions; `\b` is unreliable. |
+| `date`, `stat`, `readlink` | Different flags from the GNU versions. |
+
+Python itself is installed via Homebrew.
 
 Development install (Python ≥ 3.12), into the virtual environment `$ENVS_HOME/dc3`:
 

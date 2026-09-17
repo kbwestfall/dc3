@@ -298,5 +298,8 @@ def configure_matplotlib(show):
     """
     if show:
         return
+    # NOTE: Deferred deliberately, for the same reason a script's imports belong
+    # in its main: this module is imported by every registered entry point, so a
+    # module-level matplotlib import would make even `--help` pay for it.
     import matplotlib
     matplotlib.use('Agg', force=True)

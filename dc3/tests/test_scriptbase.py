@@ -6,8 +6,11 @@ import argparse
 import logging
 from pathlib import Path
 
+import matplotlib
 import pytest
 
+import dc3
+from dc3 import log
 from dc3.par.dc3par import DC3Par
 from dc3.scripts.scriptbase import ScriptBase, configure_matplotlib
 from dc3.scripts.version import Version
@@ -130,14 +133,12 @@ def test_resolve_par_still_validates_the_result(tmp_path):
 )
 def test_verbosity_maps_to_logging_level(verbosity, expected):
     """Each verbosity level maps to the documented logging level."""
-    from dc3 import log
     assert log.convert_verbosity_to_logging_level(verbosity) == expected, \
         f'Verbosity {verbosity} did not map to the documented logging level'
 
 
 def test_invalid_verbosity_is_rejected():
     """A verbosity outside 0-2 is an error rather than a silent clamp."""
-    from dc3 import log
     with pytest.raises(ValueError, match='Verbosity level'):
         log.convert_verbosity_to_logging_level(3)
 
@@ -151,7 +152,6 @@ def test_default_log_file_name():
 
 def test_init_log_writes_a_file(tmp_path):
     """Naming a log file produces one, and it records what was logged."""
-    from dc3 import log
     f = tmp_path / 'run.log'
     args = argparse.Namespace(verbosity=1, log_file=str(f), log_level=None)
     try:
@@ -185,7 +185,6 @@ def test_expandpath_handles_wildcards_in_directories(tmp_path):
 
 def test_configure_matplotlib_forces_a_headless_backend():
     """Without --show, a non-interactive backend is selected."""
-    import matplotlib
     original = matplotlib.get_backend()
     try:
         configure_matplotlib(False)
@@ -203,7 +202,6 @@ def test_configure_matplotlib_forces_a_headless_backend():
 # ----------------------------------------------------------------------
 def test_version_script(capsys):
     """The version script reports the package version."""
-    import dc3
     Version.main(Version.parse_args([]))
     assert dc3.__version__ in capsys.readouterr().out, \
         'The version script did not report the package version'
