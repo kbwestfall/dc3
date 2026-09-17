@@ -532,9 +532,38 @@ prepared spectrum sits at `σ_prep² = σ_to² − dvar_inst`. That identity —
 downstream depends on — is now tested both end to end against an analytic spectrum and directly on
 the kernel.
 
+### `dc3/core/deredshift.py` — ✅ complete
+
+The whole-pixel shift to the approximate rest frame. 19 tests.
+
+**No data moves, and nothing is truncated.** An integer pixel shift can be implemented two ways:
+roll the arrays and keep the grid, or keep the arrays and relabel the grid. They are equivalent
+*except* that rolling discards `n_shift` pixels off one end. Relabelling is therefore strictly
+better, and is what is implemented — only `log10lam0` changes.
+
+This is a small deviation from the plan's description, which anticipated the rolling form: it says
+"truncation at the ends is handled the same way" and that the `idsp` vector is "re-indexed along
+with the flux". Under relabelling there is no truncation, and nothing is re-indexed. The plan's
+*requirement* is met more strongly than stated — the dispersion must move with the flux and must
+not be rescaled by `(1+z)`, and since neither array moves they stay in correspondence with no
+work at all.
+
+**Structure mirrors `resolution.py`:** `pixel_shift(z_guess, dloglam)` returns a `DeRedshift`
+record computed by pure arithmetic, and `to_rest_frame(spectra, shift)` applies it. The record is
+testable without constructing a `Spectra`.
+
+**The velocity bookkeeping is exact**, and this is where the `velocity.py` convention pays off:
+`V_obs = V_fit + c ln(1 + z_applied)` is exact only because `c ln(1+z)` is additive on a
+logarithmic grid. The test composes a redshift *multiplicatively* — as redshifts actually combine
+— and checks the velocities *add*, so it would fail under either of the other two conventions.
+
+**One guard worth noting.** `to_rest_frame` refuses a shift computed for a different `dloglam`.
+Applying one would move the spectra to wavelengths wrong by the ratio of the two samplings, and
+nothing downstream could detect it.
+
 ### Remaining — ⬜ not started
 
-`dc3/core/deredshift.py` and `dc3/templates.py`.
+`dc3/templates.py`.
 
 ---
 
@@ -565,6 +594,7 @@ is a one-off.
 | 1 | `alambda` dropped | It is the damping parameter of the hand-rolled Levenberg–Marquardt being replaced; `scipy.optimize.least_squares` has no counterpart. `lam` survives as `fit.x_scale`, which is meaningful and is published. | ⬜ not yet |
 | 1 | `BitMaskArray` is not a `DataContainer` | PypeIt's is, which the plan notes couples its adoption to the datamodel decision. Keeping it a plain wrapper leaves that decision open. | ⬜ not yet |
 | 1 | `BitMask.validate_header` replaces `from_header` | Bits are class-declared here, so reconstructing a mask from a file is less useful than checking the file against the declaration and refusing on mismatch. | ⬜ not yet |
+| 2 | De-redshifting relabels the grid rather than rolling the arrays | The plan describes truncation at the ends and re-indexing the dispersion vector, which the rolling form requires. Relabelling achieves the same shift while discarding no pixels, and keeps flux and dispersion in correspondence with no work. | ⬜ not yet |
 
 ---
 
@@ -737,3 +767,12 @@ Tracks the fourteen verification items in the plan.
   `from pydantic._internal._model_construction import ModelMetaclass` in `funcpar.py` with
   `type(BaseModel)`, which is the same object by public API, so the declared floor does not have
   to underwrite a private path.
+- **2026-09-17** — **`dc3/core/deredshift.py` complete** (296 tests in total). Implemented the
+  whole-pixel shift as a **relabelling of the wavelength axis** rather than a roll of the arrays:
+  the two are equivalent except that rolling discards `n_shift` pixels, so relabelling is strictly
+  better and only `log10lam0` changes. Logged as a deviation, since the plan describes the rolling
+  form — it anticipates truncation at the ends and re-indexing of the dispersion vector, neither of
+  which occurs. The plan's actual requirement, that the dispersion move with the flux and not be
+  rescaled by `(1+z)`, is met more strongly: neither array moves. The velocity round-trip test
+  composes redshifts multiplicatively and checks the velocities add, so it would fail under either
+  of the other two velocity conventions.
