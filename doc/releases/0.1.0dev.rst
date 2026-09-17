@@ -35,3 +35,14 @@ Functionality/Performance Improvements and Additions
 
 - Initial repository scaffold: build configuration, licensing, continuous
   integration, and the ``dc3`` package tree.
+
+- Added ``dc3.pkg``: logging, exceptions, the file cache, and the package
+  data-path registry.
+
+- Added ``dc3.par.ParSet``, the base class for all runtime parameters, built on
+  ``pydantic`` v2. Supports reStructuredText table generation, a FITS header
+  round-trip, a layered default/file/command-line merge, and TOML configuration
+  files that carry parameter descriptions as comments.
+
+- Added ``DC3CodingError``, raised for a fault in ``dc3`` itself rather than in
+  how it is used.

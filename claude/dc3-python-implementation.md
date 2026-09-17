@@ -127,16 +127,64 @@ checkout. Without it the URL silently falls back to `main` and CI fails on any b
 data, with an error that looks nothing like its cause. **`pygit2` is therefore in the `test`
 extra**, not optional for testing.
 
-### `dc3/par/` — ⬜ not started
+### `dc3/par/parset.py` — ✅ complete
 
-This is where the first structural decision has to be settled. Two decisions are deliberately
-left open for the implementation to settle, both by prototyping rather than by argument:
+**Decision: `ParSet` is built on `pydantic` v2.** The plan left this open to be settled by
+prototyping rather than argument; both prototypes are kept under `prototypes/`.
 
-1. **Whether `ParSet` is built on `pydantic` v2** or on PypeIt's hand-rolled design. Prototype one
-   parameter set both ways first. What pydantic does not give free: `to_rst_table`,
-   `to_header`/`from_header`, and the layered default→file→CLI merge.
-2. **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
-   class. `dc3/results.py` (Phase 4) is the test case.
+`ParSet` is a thin layer over `pydantic.BaseModel` supplying exactly the four things pydantic
+does not: `to_rst_table`, `to_header`/`from_header`, the layered default→file→CLI merge, and TOML
+output that preserves descriptions as comments. Everything else — types, coercion, options,
+defaults, nesting, validation — is pydantic's.
+
+**What actually decided it** was not the pydantic prototype but
+[`prototypes/annotation_survey.py`](../prototypes/annotation_survey.py). The plan recorded
+`FuncPar` as *evidence against* pydantic, on the grounds that its annotation-to-`dtype` machinery
+was already written. The survey measured what that machinery recovers from the functions `dc3`
+actually wraps:
+
+| Package | Annotated keyword arguments |
+|---|---|
+| `ppxf` (`varsmooth`, `losvd_rfft`, `log_rebin`) | **0 of 5** |
+| `scipy` (`least_squares`, `differential_evolution`, `nnls`, `windows.tukey`) | **0 of 44** |
+| `numpy` (`Legendre.fit`) | **0 of 6** |
+| `astropy` (`sigma_clip`) | 11 of 11 |
+| **Total** | **11 of 66 — 17%** |
+
+Both designs read the same annotations, so pypeit's `_dtype_from_annotation` returns `None`
+exactly where pydantic's `create_model` gets `typing.Any`. **`FuncPar` is equally weak either
+way**, so it stopped being a differentiator, and pydantic's stricter validation decided it.
+
+Two consequences carry into `funcpar.py`:
+
+- **The `doc_url` attribute is load-bearing, not a nicety.** For a ppxf-wrapping `FuncPar` the
+  upstream documentation is the *only* information a user gets — no type, no options, no
+  description. `doc_url` is already on the base class, and both `to_rst_table` and the TOML
+  emitter surface it.
+- **`losvd_rfft` cannot be wrapped by `FuncPar` at all.** Its signature is entirely positional
+  (`pars, nspec, moments, nl, ncomp, vsyst, factor, sigma_diff` — zero keyword arguments), and
+  `FuncPar` captures only keywords with defaults. It needs a hand-written `ParSet` or a direct
+  call.
+
+**Differences from PypeIt's `ParSet`,** worth knowing when reading code written against the other:
+access is by attribute rather than by key (item access is retained as a shim), and a parameter
+cannot silently be None — PypeIt's `__setitem__` always permits None regardless of the declared
+type, where here a parameter is nullable only if its annotation says so.
+
+**Verification.** 35 tests in `dc3/tests/test_parset.py`, covering the round trips (dict, TOML
+file, FITS header, and FITS header through an actual file write), nested validation with location
+reporting, cross-parameter validation, the layered merge, and the generated rst. The suite runs
+under `-W error::DeprecationWarning`, which is what holds the item-access shims off pydantic's
+instance-level `model_fields` — deprecated in 2.11 and removed in 3.0.
+
+### `dc3/par/funcpar.py`, `dc3/par/dc3par.py` — ⬜ not started
+
+### The datamodel decision — ⬜ still open
+
+**Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
+class. `dc3/results.py` (Phase 4) is the test case. Note the `ParSet` decision above makes
+pydantic the natural candidate for the validation layer, since the two would then share one
+validation technology.
 
 Read the **`funcpar_rebase`** branch of `~/Work/packages/pypeit` before writing anything — it is
 the single source for both `ParSet` and `FuncPar`, and supersedes `funcpar_update`.
@@ -164,6 +212,9 @@ is a one-off.
 | 0 | No root `CHANGES.rst`; changelog in `doc/releases/` | Follows PypeIt's current practice rather than its deprecated file. | ⬜ not yet |
 | 0 | `[project.scripts]` left empty | Entry points are added as each script is written, so a `pip install` never advertises a command that does not exist. | ⬜ not yet |
 | 1 | `pygit2` added to the `test` extra | Not in the plan. Required for correct branch resolution in the cache; see above. | ⬜ not yet |
+| 1 | `ParSet` built on pydantic v2, not ported from PypeIt | The plan allowed either, to be settled by prototyping. Settled in pydantic's favour; see above. | ⬜ not yet |
+| 1 | `validate_declaration` lives in the test suite, not on `ParSet` | No user input can violate it — it constrains how a parameter set is *written*, so it belongs with the tests that enforce it. Now `dc3.tests.test_parset.check_declaration`. | ⬜ not yet |
+| 1 | Added `DC3CodingError` | Not in the plan. Separates faults in `dc3` itself from faults in its use, so a user seeing one knows whether to report a bug or fix their input. | ⬜ not yet |
 
 ---
 
@@ -207,3 +258,14 @@ Tracks the fourteen verification items in the plan.
   what makes the cache's branch resolution work under `tox`, and the consequence that `pygit2`
   must be a test requirement. Opened the deviations table with four entries. Work paused with
   `dc3/par/` not yet started; that is where the `ParSet` prototype decision gets settled.
+- **2026-09-17** — **`ParSet` settled on pydantic v2** and `dc3/par/parset.py` written, with 35
+  tests. Recorded the measurement that decided it: only 17% of the keyword arguments `dc3` wraps
+  carry type annotations (ppxf 0/5, scipy 0/44, numpy 0/6), so `FuncPar`'s dtype inference is
+  equally weak under either design — which withdraws the argument the plan had recorded *against*
+  pydantic and leaves its stricter validation deciding. Noted the two consequences for
+  `funcpar.py`: `doc_url` is load-bearing rather than a nicety, and `losvd_rfft` cannot be wrapped
+  by `FuncPar` at all because its signature is entirely positional. Three further deviations
+  logged: pydantic itself, moving `validate_declaration` into the test suite, and adding
+  `DC3CodingError`. Also added three conventions to `CLAUDE.md` at the user's request — explicit
+  condition checks over truthiness, assertion messages on every test assert, and the three-tier
+  split of commit message / release note / this document.

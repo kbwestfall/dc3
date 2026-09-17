@@ -4,6 +4,7 @@ prune build
 prune dist
 prune doc
 prune claude
+prune prototypes
 
 # Remove file types
 global-exclude *.pyc *.o *.so *.DS_Store *.ipynb
