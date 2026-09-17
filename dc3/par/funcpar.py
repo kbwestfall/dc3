@@ -71,14 +71,23 @@ import inspect
 import types
 from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
-from pydantic import Field
-from pydantic._internal._model_construction import ModelMetaclass
+from pydantic import BaseModel, Field
 
 from ..pkg.exceptions import DC3CodingError
 from .parset import ParSet
 
 
 __all__ = ['FuncPar']
+
+
+ModelMetaclass = type(BaseModel)
+"""
+Pydantic's metaclass, which :class:`FuncParMeta` extends.
+
+Obtained from :class:`pydantic.BaseModel` rather than imported from
+``pydantic._internal``, so that nothing here depends on a private path that
+upstream is free to move.
+"""
 
 
 def _unwrap(func):

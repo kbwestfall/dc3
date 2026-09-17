@@ -727,3 +727,13 @@ Tracks the fourteen verification items in the plan.
   output alike and cancels in the quadrature difference. Added to the reproduction script, so the
   result cannot be attributed to an unphysical line profile. Also softened the report's
   characterization of the clip, which read as more judgemental than the evidence warrants.
+- **2026-09-17** — Declared `pydantic>=2.0` in `pyproject.toml`, which the `ParSet` decision
+  required but never added; the package had only worked because `pydantic` was installed by hand
+  during the prototyping. Found by the user on pushing to GitHub. Audited every third-party import
+  against the declared set — `pydantic` was the only omission — and verified a clean install in a
+  throwaway environment, which is the failure mode that exposed it. Dropped `packaging`, declared
+  in the initial scaffold by analogy with PypeIt but never imported; it remains present
+  transitively via `astropy` and `matplotlib`. Also replaced
+  `from pydantic._internal._model_construction import ModelMetaclass` in `funcpar.py` with
+  `type(BaseModel)`, which is the same object by public API, so the declared floor does not have
+  to underwrite a private path.

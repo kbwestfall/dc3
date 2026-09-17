@@ -38,8 +38,8 @@ dependencies = [
     "astropy>=7.0",
     "matplotlib>=3.7",
     "numpy>=2.0",
-    "packaging>=22.0",
     "ppxf>=9.5.0",
+    "pydantic>=2.0",
     "scipy>=1.11",
     "specutils>=2.0",
 ]

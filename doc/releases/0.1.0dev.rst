@@ -30,6 +30,8 @@ Dependency Changes
   latest release are pinned as explicit ``tox`` axes, since both functions sit
   on the critical path.
 
+- ``pydantic`` (v2) is a hard dependency; ``dc3.par.ParSet`` is built on it.
+
 Functionality/Performance Improvements and Additions
 ----------------------------------------------------
 
