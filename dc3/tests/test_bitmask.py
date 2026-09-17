@@ -7,7 +7,7 @@ from astropy.io import fits
 import numpy as np
 import pytest
 
-from dc3.core.bitmask import BitMask, BitMaskArray
+from dc3.core.bitmask import RETIRED_BIT_PREFIX, BitMask, BitMaskArray
 from dc3.pkg.exceptions import DC3BitMaskError, DC3CodingError
 
 
@@ -18,7 +18,7 @@ class ExampleBitMask(BitMask):
     bits = {
         'NODATA': 'Pixel has no data',
         'CR': 'Pixel contaminated by a cosmic ray',
-        'OLDFLAG': None,                       # retired; holds bit 2 open
+        'OLDFLAG': f'{RETIRED_BIT_PREFIX} Pixel was rejected by a since-removed test',
         'LOWSNR': 'Pixel has low signal-to-noise',
     }
 
@@ -49,14 +49,38 @@ def test_retired_bits_are_excluded_but_hold_their_place():
     """
     assert ExampleBitMask.keys() == ['NODATA', 'CR', 'LOWSNR'], \
         'Retired bit was not excluded from the usable keys'
-    assert len(ExampleBitMask.bits) == 4, \
-        'Retired bit was dropped from the declaration rather than kept'
+    assert ExampleBitMask.all_keys() == ['NODATA', 'CR', 'OLDFLAG', 'LOWSNR'], \
+        'Retired bit was dropped from the full layout rather than kept in place'
     assert ExampleBitMask().nbits == 4, \
         'nbits should count the retired bit, since it still occupies a position'
-    with pytest.raises(DC3BitMaskError, match='retired'):
-        ExampleBitMask.bit('OLDFLAG')
+    assert ExampleBitMask.is_retired('OLDFLAG'), 'Retired bit was not recognized as retired'
+    assert not ExampleBitMask.is_retired('CR'), 'A live bit was reported as retired'
     with pytest.raises(DC3BitMaskError, match='Retired'):
         ExampleBitMask.flagged(np.zeros(3, dtype=int), flag='OLDFLAG')
+
+
+def test_retired_bit_keeps_its_description():
+    """
+    Retiring a bit must not discard what it meant.
+
+    A mask written before the bit was retired still has it set, so reading that
+    file requires knowing what the bit recorded.
+    """
+    descr = ExampleBitMask.bits['OLDFLAG']
+    assert descr.startswith(RETIRED_BIT_PREFIX), 'Retirement is not marked in the description'
+    assert 'since-removed test' in descr, \
+        'The original meaning of the bit was lost when it was retired'
+
+
+def test_bit_reports_the_position_of_a_retired_bit():
+    """
+    The position of a retired bit is still a fact about the layout.
+
+    Whether a bit may be *used* is enforced where it is used, not here, so that
+    the header machinery can record the full layout.
+    """
+    assert ExampleBitMask.bit('OLDFLAG') == 2, \
+        'A retired bit did not report its position, which the header record needs'
 
 
 def test_unknown_bit_is_rejected():
@@ -154,9 +178,81 @@ def test_header_round_trip():
     assert hdr['EXBIT0'] == 'NODATA', 'Bit name was not written under its numbered keyword'
     assert hdr.comments['EXBIT0'] == 'Pixel has no data', \
         'Bit description was not written as the keyword comment'
-    assert ExampleBitMask.parse_header(hdr) == {0: 'NODATA', 1: 'CR', 3: 'LOWSNR'}, \
-        'Parsing the header did not recover the written bit definitions'
+    assert ExampleBitMask.parse_header(hdr) == {
+        0: 'NODATA', 1: 'CR', 2: 'OLDFLAG', 3: 'LOWSNR'
+    }, 'Parsing the header did not recover the full written bit layout'
     ExampleBitMask.validate_header(hdr)
+
+
+def test_retiring_a_bit_does_not_invalidate_existing_files():
+    """
+    A file written before a bit was retired still validates.
+
+    This is the whole point of retiring rather than deleting: the older mask
+    has that bit set, and must remain readable.  Omitting retired bits from the
+    header record would make every such file fail validation -- turning the
+    mechanism that preserves old files into one that rejects them.
+    """
+    class BeforeRetirement(BitMask):
+        prefix = 'EXBIT'
+        bits = {
+            'NODATA': 'Pixel has no data',
+            'CR': 'Pixel contaminated by a cosmic ray',
+            'OLDFLAG': 'Pixel was rejected by a since-removed test',
+            'LOWSNR': 'Pixel has low signal-to-noise',
+        }
+
+    # A header written while OLDFLAG was still live
+    hdr = BeforeRetirement.to_header()
+    # ... is still valid against the class that has since retired it
+    ExampleBitMask.validate_header(hdr)
+
+
+def test_long_descriptions_do_not_warn(recwarn):
+    """
+    An over-long description is truncated deliberately, not by astropy.
+
+    astropy truncates it anyway, but with a VerifyWarning on every write.  The
+    comment is a convenience; what the file needs to interpret a mask is the
+    name-to-value mapping, which is the card's value and is never truncated.
+    """
+    class Verbose(BitMask):
+        prefix = 'VRB'
+        bits = {
+            'AVERYLONGBITNAME': (
+                'A description far longer than a FITS card can hold, which must therefore be '
+                'truncated somewhere, and it may as well be here where it is intentional.'
+            ),
+        }
+
+    hdr = Verbose.to_header()
+    assert len(recwarn.list) == 0, \
+        f'Writing a long description warned: {[str(w.message) for w in recwarn.list]}'
+    assert hdr['VRB0'] == 'AVERYLONGBITNAME', \
+        'The bit name, which is what the mapping needs, must never be truncated'
+    assert hdr.comments['VRB0'].endswith('...'), \
+        'An over-long description should be marked as truncated'
+    Verbose.validate_header(hdr)
+
+
+@pytest.mark.parametrize('namelen', [1, 4, 8, 12, 20, 30, 40])
+@pytest.mark.parametrize('desclen', [1, 20, 40, 47, 48, 60, 120, 400])
+def test_cards_fit_for_any_name_and_description_length(namelen, desclen, recwarn):
+    """
+    No combination of bit name and description overruns a FITS card.
+
+    The truncation point depends on the length of the bit name, since the value
+    field pushes the comment to the right, so it is swept rather than checked at
+    one size.
+    """
+    class Sweep(BitMask):
+        prefix = 'SW'
+        bits = {'N' * namelen: 'D' * desclen}
+
+    card = str(Sweep.to_header().cards[0])
+    assert len(recwarn.list) == 0, \
+        f'name={namelen}, descr={desclen} warned: {[str(w.message) for w in recwarn.list]}'
+    assert len(card) <= 80, f'name={namelen}, descr={desclen} produced an {len(card)}-char card'
 
 
 def test_validate_header_detects_renumbering():

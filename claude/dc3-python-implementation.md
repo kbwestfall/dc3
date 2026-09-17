@@ -268,8 +268,20 @@ Two departures from PypeIt:
 
 **Retired bits.** The bit *value* is its position in the mapping, so removing a bit renumbers
 every later one and silently reinterprets every mask already written. PypeIt reserves positions
-with repeated `'NULL'` keys, which a dict cannot express; here a bit is retired by setting its
-description to `None`. It keeps its position, is excluded from `keys()`, and raises if used.
+with repeated `'NULL'` keys, which a dict cannot express; here a bit is retired by prefixing its
+description with `RETIRED_BIT_PREFIX` (`'[RETIRED]'`). It keeps its position, is excluded from
+`keys()`, and raises if used.
+
+**The description is kept, deliberately.** An earlier draft marked retirement by setting the
+description to `None`, which discards exactly the information a reader of an *old* file needs:
+that file still has the bit set, so interpreting it means knowing what the bit meant. Retiring a
+bit must not erase its meaning.
+
+This distinction propagates: `keys()` is what you may *use*, `all_keys()` is the *layout*. The
+header records `all_keys()`. Getting that wrong turns the mechanism inside out — if retired bits
+were omitted from the header, then retiring a bit would make `validate_header` reject every file
+written before the retirement, which is precisely the case retirement exists to support. There is
+a test for it.
 
 **`validate_header` is new.** PypeIt's `from_header` reconstructs a `BitMask` from whatever the
 file recorded. Since `dc3`'s bits are class-declared, the useful operation is the opposite one:
@@ -402,3 +414,12 @@ Tracks the fourteen verification items in the plan.
   explicit Sphinx role for intersphinx, and set the line length at 99, enforced by
   `tox -e codestyle` via a `[pycodestyle]` section in `tox.ini`; the CI codestyle job now calls
   tox rather than duplicating the command.
+- **2026-09-17** — Reworked how a bit is retired, at the user's request (170 tests in total). A
+  retired bit is now marked by prefixing its description with `RETIRED_BIT_PREFIX` rather than by
+  replacing the description with `None`, which had discarded the very thing a reader of an older
+  file needs. Splitting `keys()` (usable) from `all_keys()` (layout) exposed a second defect in
+  the first draft: retired bits were omitted from the header, so retiring a bit would have made
+  `validate_header` reject every file written *before* the retirement — inverting the purpose of
+  the mechanism. Also made over-long descriptions truncate deliberately rather than letting
+  `astropy` truncate them with a warning on every write; the truncation point depends on the bit
+  name's length, so it is swept across name and description sizes in the tests.

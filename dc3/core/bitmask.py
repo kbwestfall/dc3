@@ -34,9 +34,28 @@ Declaring a mask
 
 The bit *value* is the position in the mapping, so **order is the datamodel**:
 inserting a bit anywhere but the end renumbers every bit after it, and silently
-reinterprets every mask already written to a file.  To retire a bit, keep its
-entry and set its description to None; it is then excluded from
-:func:`BitMask.keys` but still occupies its position.
+reinterprets every mask already written to a file.
+
+Retiring a bit
+--------------
+
+A bit that is no longer set must still keep its position, or every later bit
+changes value.  Retire one by prefixing its description with
+:data:`RETIRED_BIT_PREFIX`:
+
+.. code-block:: python
+
+    bits = {
+        'NODATA': 'Pixel has no data',
+        'CR': '[RETIRED] Pixel contaminated by a cosmic ray',
+        'LOWSNR': 'Pixel has low signal-to-noise',
+    }
+
+The description is kept deliberately: a mask written before the bit was retired
+still has it set, and reading that file means knowing what the bit *meant*.  A
+retired bit is excluded from :func:`BitMask.keys` and cannot be passed to any
+operation, but it still occupies its position and is still recorded in a header,
+so files written under the older definition continue to validate.
 
 .. include:: ../include/links.rst
 """
@@ -50,7 +69,57 @@ import numpy as np
 from ..pkg.exceptions import DC3BitMaskError, DC3CodingError
 
 
-__all__ = ['BitMask', 'BitMaskArray']
+__all__ = ['BitMask', 'BitMaskArray', 'RETIRED_BIT_PREFIX']
+
+
+RETIRED_BIT_PREFIX = '[RETIRED]'
+"""
+Prefix marking a retired bit in its description.
+
+A retired bit keeps its position and its description, so that masks written
+before it was retired remain interpretable; see the module documentation.
+"""
+
+_FITS_CARD_LENGTH = 80
+"""Length of a FITS header card, which bounds what a keyword comment may hold."""
+
+
+def _fits_comment(keyword, value, comment):
+    """
+    Truncate a comment so that it fits on a single FITS card.
+
+    A FITS card is 80 characters, and `astropy.io.fits` truncates an
+    over-long comment with a warning rather than wrapping it.  Truncating here
+    instead makes the loss explicit and keeps the warning out of ordinary output.
+
+    The comment is a convenience: the authoritative description of a bit is the
+    class declaration, and what a file actually *needs* in order to interpret a
+    mask is the name-to-value mapping, which is the card's value rather than its
+    comment.
+
+    Parameters
+    ----------
+    keyword : str
+        The header keyword.
+    value : str
+        The string value of the card.
+    comment : str
+        The desired comment.
+
+    Returns
+    -------
+    str
+        The comment, truncated with an ellipsis if it would not fit.
+    """
+    # Fixed-format card layout: the keyword occupies columns 1-8, '= ' columns
+    # 9-10, and the value field is padded out to column 30 before ' / ' and the
+    # comment.  A string value is itself padded to 8 characters inside quotes.
+    quoted = max(len(value), 8) + 2
+    overhead = 8 + len('= ') + max(20, quoted) + len(' / ')
+    available = _FITS_CARD_LENGTH - overhead
+    if len(comment) <= available:
+        return comment
+    return comment[:max(available - 3, 0)] + '...'
 
 
 class BitMask:
@@ -76,8 +145,9 @@ class BitMask:
     """
     Mapping of bit name to description, in bit order.
 
-    The bit value is the position in this mapping.  A description of None marks
-    a retired bit, which keeps its position but is otherwise ignored.
+    The bit value is the position in this mapping.  A description beginning with
+    :data:`RETIRED_BIT_PREFIX` marks a retired bit, which keeps both its
+    position and its meaning but can no longer be used.
     """
 
     def __init__(self):
@@ -90,9 +160,39 @@ class BitMask:
         self.max_value = (1 << self.nbits) - 1
 
     @classmethod
+    def is_retired(cls, flag):
+        """
+        Determine whether a declared bit has been retired.
+
+        Parameters
+        ----------
+        flag : str
+            The bit name.
+
+        Returns
+        -------
+        bool
+            True if the bit's description marks it as retired.
+
+        Raises
+        ------
+        DC3BitMaskError
+            Raised if the flag is not declared.
+        """
+        if flag not in cls.bits:
+            raise DC3BitMaskError(
+                f'{flag} is not a bit of {cls.__name__}.  Valid bits are: {cls.keys()}.'
+            )
+        return cls.bits[flag].startswith(RETIRED_BIT_PREFIX)
+
+    @classmethod
     def bit(cls, flag):
         """
         Return the bit value of a named flag.
+
+        This reports the position of *any* declared bit, retired or not, since
+        the position is a fact about the layout.  Whether a bit may be *used* is
+        checked where it is used; see :func:`keys`.
 
         Parameters
         ----------
@@ -107,16 +207,11 @@ class BitMask:
         Raises
         ------
         DC3BitMaskError
-            Raised if the flag is not declared, or has been retired.
+            Raised if the flag is not declared.
         """
         if flag not in cls.bits:
             raise DC3BitMaskError(
                 f'{flag} is not a bit of {cls.__name__}.  Valid bits are: {cls.keys()}.'
-            )
-        if cls.bits[flag] is None:
-            raise DC3BitMaskError(
-                f'{flag} is a retired bit of {cls.__name__} and cannot be used.  It is kept '
-                'only so that the remaining bits do not change value.'
             )
         return list(cls.bits.keys()).index(flag)
 
@@ -128,9 +223,25 @@ class BitMask:
         Returns
         -------
         list
-            Bit names, excluding any that have been retired.
+            Bit names, excluding any that have been retired.  Use
+            :func:`all_keys` for the full layout, including retired bits.
         """
-        return [key for key, descr in cls.bits.items() if descr is not None]
+        return [key for key in cls.bits if not cls.is_retired(key)]
+
+    @classmethod
+    def all_keys(cls):
+        """
+        Return every declared bit name, in bit order, including retired ones.
+
+        This is the layout that gets recorded in a file, so that a mask written
+        before a bit was retired can still be interpreted.
+
+        Returns
+        -------
+        list
+            Every declared bit name.
+        """
+        return list(cls.bits.keys())
 
     @classmethod
     def _prep_flags(cls, flag):
@@ -161,9 +272,13 @@ class BitMask:
                 f'Unrecognized bits for {cls.__name__}: {unrecognized}.  '
                 f'Valid bits are: {cls.keys()}.'
             )
-        retired = [f for f in _flag if cls.bits[f] is None]
+        retired = [f for f in _flag if cls.is_retired(f)]
         if len(retired) > 0:
-            raise DC3BitMaskError(f'Retired bits of {cls.__name__} cannot be used: {retired}.')
+            raise DC3BitMaskError(
+                f'Retired bits of {cls.__name__} cannot be used: {retired}.  They are kept only '
+                'so that the remaining bits do not change value, and so that masks written '
+                'before they were retired can still be read.'
+            )
         return _flag
 
     @classmethod
@@ -370,8 +485,13 @@ class BitMask:
 
     @classmethod
     def info(cls):
-        """Print the declared bits and their descriptions."""
-        for key in cls.keys():
+        """
+        Print the declared bits and their descriptions.
+
+        Retired bits are shown, since their descriptions are what make an older
+        mask interpretable; the retirement is evident from the description.
+        """
+        for key in cls.all_keys():
             print(f'         Bit: {key} = {cls.bit(key)}')
             print(textwrap.fill(f' Description: {cls.bits[key]}', 78))
             print(' ')
@@ -390,10 +510,16 @@ class BitMask:
         -------
         dict
             Mapping of header keyword to bit name.
+
+        Notes
+        -----
+        Retired bits are included.  What is recorded is the bit *layout*, and a
+        mask written before a bit was retired still has that bit set; omitting
+        it would make every such file fail :func:`validate_header`.
         """
         _prefix = cls.prefix if prefix is None else prefix
         ndig = len(str(max(len(cls.bits) - 1, 1)))
-        return {f'{_prefix}{str(cls.bit(key)).zfill(ndig)}': key for key in cls.keys()}
+        return {f'{_prefix}{str(cls.bit(key)).zfill(ndig)}': key for key in cls.all_keys()}
 
     @classmethod
     def to_header(cls, hdr=None, prefix=None):
@@ -417,7 +543,7 @@ class BitMask:
         """
         _hdr = fits.Header() if hdr is None else hdr
         for keyword, key in cls.to_dict(prefix=prefix).items():
-            _hdr[keyword] = (key, cls.bits[key])
+            _hdr[keyword] = (key, _fits_comment(keyword, key, cls.bits[key]))
         return _hdr
 
     @classmethod
@@ -478,7 +604,7 @@ class BitMask:
                 f'{cls.prefix if prefix is None else prefix}, so its mask values cannot be '
                 'interpreted.'
             )
-        expected = {cls.bit(key): key for key in cls.keys()}
+        expected = {cls.bit(key): key for key in cls.all_keys()}
         if found != expected:
             differences = [
                 f'bit {value}: file has {found.get(value, "nothing")!r}, '
