@@ -840,3 +840,36 @@ Tracks the fourteen verification items in the plan.
   one, and the redshift its resolution matching returns is one that was passed *in* as a velocity
   offset — the code itself carries a `TODO` saying it should be an input. `dc3` needs no such
   offset because the galaxy is de-redshifted before preparation runs.
+- **2026-09-17** — **Split the template library's *definition* from its *preparation*, and adopted
+  `**par.to_kwargs()` as the calling pattern** (335 tests in total), at the user's request. Four
+  pieces:
+
+  `TemplateLibraryPar` is new, modelled on `mangadap`'s `TemplateLibraryDef`: `key`,
+  `file_search`, `fwhm`, `resolution_ext`, `in_vacuum`, `wave_limit`, `lower_flux_limit`,
+  `log10`. It says what a library is and how to read it, which is a fixed property of an
+  installation; `TemplatePar` says how that library is prepared for the galaxy data at hand,
+  which is not. The `library` key moved out of `TemplatePar` accordingly, and
+  `fiducial_method` moved in — it is a preparation choice, and was previously an argument of
+  `prepare` with no configuration-file route at all, which broke the 1:1 rule. **The reader that
+  consumes `TemplateLibraryPar` is not written**; the plan puts file I/O at the `specutils`
+  boundary. The parameters are declared now because they fix the configuration surface, and the
+  class docstring says so.
+
+  `ParSet.to_kwargs()` is new and is deliberately *not* interchangeable with `to_dict()`.
+  `to_dict` dumps in `'json'` mode because a `Path` must become a string to be written to TOML or
+  a FITS header; a function declaring a `Path` parameter must be handed a `Path`. The two modes
+  are one keyword apart and would have been easy to conflate, so each carries a test asserting the
+  other's behaviour. `to_kwargs` raises on a nested parameter set rather than emitting a `dict`
+  for it, since a function keyword is never a parameter set.
+
+  `prepare` now takes explicit keywords with defaults, not `**kwargs`. This was the point at which
+  the signature could have become opaque; explicit keywords keep the function callable and
+  documented on its own terms, and make the agreement below checkable by `inspect.signature`.
+
+  `test_parset_matches_its_function` checks that an expanded parameter set and its function agree
+  key for key *and default for default* — a keyword the set does not declare is unreachable from a
+  configuration file, and a parameter the function does not accept is a `TypeError` at run time.
+  Its exhaustiveness guard is the part worth keeping: `EXPANDED_PARSETS` and `UNEXPANDED_PARSETS`
+  must between them cover `dc3par.__all__`, so a new parameter set forces a decision about which
+  it is rather than silently escaping the check. `check_declaration` gained a `flat=True` mode for
+  the same reason, promoting a run-time failure at the call site to a declaration error.

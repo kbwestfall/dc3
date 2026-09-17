@@ -49,9 +49,10 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.par.FuncPar``, a ``ParSet`` whose parameters are derived from the
   signature of a wrapped third-party function.
 
-- Added ``dc3.par.dc3par``, the dc3 parameter sets themselves: ``TemplatePar``,
-  ``ConvolvePar``, ``CorrelatePar``, ``MaskPar``, ``WindowPar``,
-  ``ContinuumPar``, ``FitPar``, ``QAPar``, and the top-level ``DC3Par``. These
+- Added ``dc3.par.dc3par``, the dc3 parameter sets themselves:
+  ``TemplateLibraryPar``, ``TemplatePar``, ``ConvolvePar``, ``CorrelatePar``,
+  ``MaskPar``, ``WindowPar``, ``ContinuumPar``, ``FitPar``, ``QAPar``, and the
+  top-level ``DC3Par``. These
   expose a number of values that were hardwired in the C++ implementation,
   including the apodization window, the sub-Nyquist convolution floor, the
   fit-window width, and the optimizer parameter scales.
@@ -95,3 +96,11 @@ Functionality/Performance Improvements and Additions
 
 - Added ``DC3CodingError``, raised for a fault in ``dc3`` itself rather than in
   how it is used.
+
+- Separated the definition of a template library, ``TemplateLibraryPar``, from
+  the parameters governing how it is prepared for fitting, ``TemplatePar``.
+
+- Added ``ParSet.to_kwargs``, which returns the parameters as Python objects so
+  that a parameter set can be expanded over the keywords of the function it
+  configures. ``dc3.templates.prepare`` is the first such function; a test
+  checks that the two agree key for key and default for default.

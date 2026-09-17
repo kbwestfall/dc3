@@ -12,6 +12,7 @@ from .dc3par import (
     FitPar,
     MaskPar,
     QAPar,
+    TemplateLibraryPar,
     TemplatePar,
     WindowPar,
 )
@@ -26,6 +27,7 @@ __all__ = [
     'MaskPar',
     'ParSet',
     'QAPar',
+    'TemplateLibraryPar',
     'TemplatePar',
     'WindowPar',
 ]

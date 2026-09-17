@@ -7,11 +7,13 @@ trips -- rather than the behaviour of the base class, which
 ``test_parset.py`` covers.
 """
 
+import inspect
 import tomllib
 
 import pytest
 from pydantic import ValidationError
 
+from dc3 import templates
 from dc3.par import dc3par
 from dc3.par.dc3par import ContinuumPar, DC3Par, FitPar, TemplatePar
 from dc3.par.parset import ParSet
@@ -20,6 +22,28 @@ from .test_parset import check_declaration
 
 
 ALL_PARSETS = [getattr(dc3par, name) for name in dc3par.__all__]
+
+# The parameter sets that are expanded over a function's keywords, paired with
+# the function they configure.  A set listed here must agree with its function
+# name for name and default for default; see test_parset_matches_its_function.
+EXPANDED_PARSETS = {
+    TemplatePar: templates.prepare,
+}
+
+# The parameter sets that are NOT expanded over a function, with the reason.
+# Every dc3 parameter set must appear either here or in EXPANDED_PARSETS, so
+# that adding one is a deliberate decision about which it is.
+UNEXPANDED_PARSETS = {
+    dc3par.TemplateLibraryPar: 'Declares a library on disk; its reader is not yet written.',
+    dc3par.ConvolvePar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.CorrelatePar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.MaskPar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.WindowPar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.ContinuumPar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.FitPar: 'Consumed inside the fit, not at a single function boundary.',
+    dc3par.QAPar: 'Read by the plotting tier, which is not yet written.',
+    dc3par.DC3Par: 'The top-level set; it nests the others and is never expanded.',
+}
 
 
 # ----------------------------------------------------------------------
@@ -69,6 +93,59 @@ def test_every_parset_is_reachable_from_the_top():
             continue
         assert cls in nested, \
             f'{cls.__name__} is declared but not nested in DC3Par, so it can never be configured'
+
+
+# ----------------------------------------------------------------------
+# Agreement between a parameter set and the function it configures
+# ----------------------------------------------------------------------
+def test_every_parset_is_classified():
+    """
+    Each parameter set is either expanded over a function or exempted.
+
+    The two tables below are what keeps the agreement check honest: without
+    this, a new parameter set could be added to a function's signature and the
+    check would simply not run on it.
+    """
+    classified = set(EXPANDED_PARSETS) | set(UNEXPANDED_PARSETS)
+    for cls in ALL_PARSETS:
+        assert cls in classified, \
+            f'{cls.__name__} appears in neither EXPANDED_PARSETS nor UNEXPANDED_PARSETS.  ' \
+            'Decide whether it is expanded over a function and record it in the right one.'
+    assert len(set(EXPANDED_PARSETS) & set(UNEXPANDED_PARSETS)) == 0, \
+        'A parameter set is listed as both expanded and unexpanded'
+
+
+@pytest.mark.parametrize(
+    'cls,func', list(EXPANDED_PARSETS.items()),
+    ids=[c.__name__ for c in EXPANDED_PARSETS]
+)
+def test_parset_matches_its_function(cls, func):
+    """
+    An expanded parameter set agrees with its function, key for key.
+
+    The call is ``func(..., **par.to_kwargs())``, so a parameter the function
+    does not accept raises a TypeError at run time and a keyword the parameter
+    set does not declare is silently unreachable from a configuration file.
+    Both are caught here instead.  The defaults must agree too, since otherwise
+    calling the function directly and calling it through the parameter set
+    would do different things.
+    """
+    check_declaration(cls, flat=True)
+
+    signature = inspect.signature(func)
+    accepted = {
+        name: p for name, p in signature.parameters.items()
+        if p.default is not inspect.Parameter.empty
+    }
+    assert set(cls.keys()) == set(accepted), (
+        f'{cls.__name__} and {func.__name__} disagree: '
+        f'only in the parameter set: {sorted(set(cls.keys()) - set(accepted))}; '
+        f'only in the signature: {sorted(set(accepted) - set(cls.keys()))}'
+    )
+    for key, value in cls().to_kwargs().items():
+        assert accepted[key].default == value, \
+            f'{cls.__name__}.{key} defaults to {value!r} but {func.__name__} defaults to ' \
+            f'{accepted[key].default!r}; the two calling routes would not agree'
 
 
 # ----------------------------------------------------------------------

@@ -309,9 +309,21 @@ def _fiducial_on_template_grid(template_wave, galaxy_wave, fiducial_idsp):
     return np.interp(template_wave, galaxy_wave, fiducial_idsp), outside
 
 
-def prepare(library, galaxy, par, fiducial_method='median'):
+def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.0,
+            mask_unmatched_idsp=False, varsmooth_oversample=1, fiducial_method='median'):
     r"""
     Run the two-step preparation pipeline.
+
+    The keyword arguments are :class:`~dc3.par.dc3par.TemplatePar`, one for one
+    and with the same defaults, so the intended call is
+
+    .. code-block:: python
+
+        prepared = templates.prepare(library, galaxy, **par.template.to_kwargs())
+
+    The agreement between the two is checked by the test suite rather than
+    asserted here, since a disagreement is a coding error rather than something
+    a user can cause.
 
     Parameters
     ----------
@@ -320,8 +332,18 @@ def prepare(library, galaxy, par, fiducial_method='median'):
     galaxy : :class:`~dc3.spectra.Spectra`
         The galaxy spectra, which supply the fiducial resolution and the
         sampling to match.  They are read, never altered.
-    par : :class:`~dc3.par.dc3par.TemplatePar`
-        The preparation parameters.
+    velscale_ratio : int, optional
+        Integer number of prepared-template pixels per galaxy pixel.
+    epsilon_sigma : float, optional
+        Target for the minimum dispersion of the preparation kernel, in pixels.
+    sigma_floor : float, optional
+        Largest pedestal, in km/s, allowed to accommodate template regions of
+        lower resolution than the galaxy.
+    mask_unmatched_idsp : bool, optional
+        Mask template regions that cannot be brought to the target resolution.
+    varsmooth_oversample : int, optional
+        Oversampling of the internal stretched grid used by the variable-sigma
+        convolution.
     fiducial_method : str, optional
         How the galaxy set is reduced to one resolution; see
         :func:`~dc3.spectra.Spectra.fiducial_resolution`.
@@ -365,10 +387,10 @@ def prepare(library, galaxy, par, fiducial_method='median'):
     # --- Step 1: match the resolution on the templates' native grid ---------
     match = resolution.match_resolution(
         library.idsp[0], target, library.velscale,
-        epsilon_sigma=par.epsilon_sigma, sigma_floor=par.sigma_floor
+        epsilon_sigma=epsilon_sigma, sigma_floor=sigma_floor
     )
     matched_flux = np.atleast_2d(resolution.apply_kernel(
-        library.loglam, library.flux, match, oversample=par.varsmooth_oversample
+        library.loglam, library.flux, match, oversample=varsmooth_oversample
     ))
     # By construction of the matching, the prepared resolution is the target
     # offset by a constant; see dc3.core.resolution.
@@ -377,7 +399,7 @@ def prepare(library, galaxy, par, fiducial_method='median'):
     # --- Step 2: resample onto the galaxy's sampling -----------------------
     resampled = sampling.Resample(
         matched_flux, x=library.wave, newRange=[library.wave[0], library.wave[-1]],
-        newdx=galaxy.dloglam / par.velscale_ratio, newLog=True
+        newdx=galaxy.dloglam / velscale_ratio, newLog=True
     )
     out_flux = np.atleast_2d(resampled.outy)
     log10lam0, dloglam = sampling.grid_from_wave(resampled.outx)
@@ -390,15 +412,15 @@ def prepare(library, galaxy, par, fiducial_method='median'):
     # outf is the fraction of each output pixel covered by valid input, so a
     # value of zero means the pixel drew on nothing.
     mask.turn_on('NODATA', select=np.broadcast_to(resampled.outf <= 0, out_flux.shape))
-    if par.mask_unmatched_idsp and np.any(match.unmatched):
+    if mask_unmatched_idsp and np.any(match.unmatched):
         unmatched = np.interp(resampled.outx, library.wave, match.unmatched.astype(float)) > 0.5
         mask.turn_on('UNMATCHED', select=np.broadcast_to(unmatched, out_flux.shape))
 
     return PreparedTemplates(
-        out_flux, log10lam0, dloglam, match=match, velscale_ratio=par.velscale_ratio,
+        out_flux, log10lam0, dloglam, match=match, velscale_ratio=velscale_ratio,
         key=preparation_key(
-            library.key, fiducial, galaxy.velscale, par.velscale_ratio, par.epsilon_sigma,
-            par.sigma_floor, par.varsmooth_oversample
+            library.key, fiducial, galaxy.velscale, velscale_ratio, epsilon_sigma,
+            sigma_floor, varsmooth_oversample
         ),
         mask=mask, idsp=out_idsp,
     )

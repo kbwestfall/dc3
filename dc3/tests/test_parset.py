@@ -26,7 +26,7 @@ from dc3.pkg.exceptions import DC3CodingError, DC3ParameterError
 # ----------------------------------------------------------------------
 # Declaration check
 # ----------------------------------------------------------------------
-def check_declaration(cls):
+def check_declaration(cls, flat=False):
     """
     Check that a :class:`~dc3.par.parset.ParSet` subclass is declared completely.
 
@@ -42,6 +42,12 @@ def check_declaration(cls):
     ----------
     cls : type
         The :class:`~dc3.par.parset.ParSet` subclass to check.
+    flat : bool, optional
+        Additionally require that no parameter is itself a parameter set.  This
+        is asked of any set that is expanded over a function's keywords with
+        :func:`~dc3.par.parset.ParSet.to_kwargs`, since a function keyword is
+        never a parameter set.  Nesting such a set would break its call site at
+        run time; checking it here makes that a declaration error instead.
 
     Raises
     ------
@@ -68,6 +74,11 @@ def check_declaration(cls):
             f'{cls.__name__} wraps {cls.func.__name__} but declares no api_doc.  A FuncPar '
             'defers to the wrapped function\'s documentation instead of reproducing it, so '
             'that pointer is the only documentation its parameters have.'
+        )
+    if flat and len(cls.nested()) > 0:
+        raise DC3CodingError(
+            f'{cls.__name__} is expanded over a function\'s keywords, so it must not contain '
+            f'nested parameter sets; it contains {cls.nested()}.'
         )
 
 
@@ -225,6 +236,13 @@ def test_check_declaration_catches_long_card_prefix():
         check_declaration(_LongPrefix)
 
 
+def test_check_declaration_catches_nesting_when_flatness_is_required():
+    """A set expanded over a function's keywords must not nest."""
+    check_declaration(ExampleTemplatePar, flat=True)
+    with pytest.raises(DC3CodingError, match='nested parameter sets'):
+        check_declaration(ExampleDC3Par, flat=True)
+
+
 # ----------------------------------------------------------------------
 # Construction and validation
 # ----------------------------------------------------------------------
@@ -329,6 +347,39 @@ def test_dict_round_trip():
     p = ExampleDC3Par(template={'velscale_ratio': 4}, fit={'method': 'de'})
     assert ExampleDC3Par.from_dict(p.to_dict()) == p, \
         'Parameter set did not survive a dictionary round trip'
+
+
+def test_to_kwargs_keeps_python_objects():
+    """
+    to_kwargs returns values as Python objects, where to_dict serializes them.
+
+    The distinction is load-bearing: to_dict must turn a Path into a string so
+    it can be written to TOML, but a function expecting a Path must be handed
+    one.  Conflating the two would pass a string where a Path was declared.
+    """
+    class _Flat(ParSet):
+        output_dir: Annotated[Path, Field(
+            default=Path('/tmp/example'), description='Directory for output products.'
+        )]
+        velscale_ratio: Annotated[int, Field(default=1, description='A parameter.')]
+
+    p = _Flat()
+    assert isinstance(p.to_kwargs()['output_dir'], Path), \
+        'to_kwargs serialized a Path, so it could not be passed to a function expecting one'
+    assert isinstance(p.to_dict()['output_dir'], str), \
+        'to_dict did not serialize a Path, so it could not be written to TOML'
+    assert p.to_kwargs()['velscale_ratio'] == 1, 'to_kwargs did not return the parameter value'
+
+
+def test_to_kwargs_rejects_a_nested_parameter_set():
+    """
+    A nested set cannot be expanded over a function, so it is reported.
+
+    A function keyword is never a parameter set, so silently passing one would
+    surface as a confusing failure inside the callee.
+    """
+    with pytest.raises(DC3ParameterError, match='nested parameter sets'):
+        ExampleDC3Par().to_kwargs()
 
 
 def test_toml_round_trip(tmp_path):

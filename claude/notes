@@ -454,3 +454,6 @@ developers, but does not require a redetermination of the limit on every import.
 I like your suggestion of a constraints table.  The table should be ascii so
 that is directly human readable and writable.  I prefer fixed-width columnated
 format to ecsv, but ecsv is preferred over FITS.
+
+
+ParSet test checks both keyword, default value *and* docstring description.

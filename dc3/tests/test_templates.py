@@ -41,11 +41,18 @@ def make_library(idsp=20.0, ntpl=2, wave_range=(3900.0, 4150.0), ratio=2):
     )
 
 
-def prepare_quietly(library, galaxy, par, **kwargs):
-    """Run the pipeline, suppressing the out-of-range warning the setup causes."""
+def prepare_quietly(library, galaxy, par=None):
+    """
+    Run the pipeline, suppressing the out-of-range warning the setup causes.
+
+    The parameter set is expanded over the function's keywords, which is the
+    calling pattern the package uses; see :func:`~dc3.templates.prepare`.
+    """
+    if par is None:
+        par = TemplatePar()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        return templates.prepare(library, galaxy, par, **kwargs)
+        return templates.prepare(library, galaxy, **par.to_kwargs())
 
 
 # ----------------------------------------------------------------------
@@ -121,7 +128,7 @@ def test_prepared_resolution_is_the_fiducial_offset_by_dvar_inst():
     be wrong.
     """
     galaxy = make_galaxy()
-    prepared = prepare_quietly(make_library(), galaxy, TemplatePar())
+    prepared = prepare_quietly(make_library(), galaxy)
 
     fiducial = np.interp(prepared.wave, galaxy.wave, galaxy.fiducial_resolution())
     expected = np.sqrt(np.square(fiducial) - prepared.dvar_inst)
@@ -137,7 +144,7 @@ def test_higher_resolution_templates_give_a_positive_offset():
 
     This is the regime that holds the fitted dispersion away from zero.
     """
-    prepared = prepare_quietly(make_library(idsp=20.0), make_galaxy(), TemplatePar())
+    prepared = prepare_quietly(make_library(idsp=20.0), make_galaxy())
     assert prepared.dvar_inst > 0, \
         'Templates of higher resolution should leave a positive dvar_inst'
 
@@ -156,7 +163,7 @@ def test_velscale_ratio_sets_the_output_sampling():
 
 def test_prepared_is_a_spectra_carrying_its_provenance():
     """The result is a Spectra that also knows how it was made."""
-    prepared = prepare_quietly(make_library(), make_galaxy(), TemplatePar())
+    prepared = prepare_quietly(make_library(), make_galaxy())
     assert isinstance(prepared, Spectra), 'PreparedTemplates should be a Spectra'
     assert prepared.match is not None, 'The resolution matching was not recorded'
     assert len(prepared.key) > 0, 'No cache key was recorded'
@@ -169,7 +176,7 @@ def test_selection_keeps_the_provenance():
     The offset is a property of the preparation, not of any one template, so it
     must survive the multi-template path discarding templates of zero weight.
     """
-    prepared = prepare_quietly(make_library(ntpl=4), make_galaxy(), TemplatePar())
+    prepared = prepare_quietly(make_library(ntpl=4), make_galaxy())
     subset = prepared[0:2]
     assert subset.dvar_inst == prepared.dvar_inst, 'The offset was lost on selection'
     assert subset.key == prepared.key, 'The cache key was lost on selection'
@@ -178,7 +185,7 @@ def test_selection_keeps_the_provenance():
 
 def test_astrophysical_variance_round_trips():
     """The correction on the prepared set inverts the instrumental offset."""
-    prepared = prepare_quietly(make_library(), make_galaxy(), TemplatePar())
+    prepared = prepare_quietly(make_library(), make_galaxy())
     sigma_star = 120.0
     sigma_obs = np.sqrt(sigma_star ** 2 + prepared.dvar_inst)
     assert np.isclose(prepared.astrophysical_variance(sigma_obs), sigma_star ** 2), \
@@ -194,7 +201,7 @@ def test_non_overlapping_wavelengths_are_rejected():
     """
     library = make_library(wave_range=(3000.0, 3100.0))
     with pytest.raises(DC3Error, match='do not overlap'):
-        templates.prepare(library, make_galaxy(), TemplatePar())
+        templates.prepare(library, make_galaxy(), **TemplatePar().to_kwargs())
 
 
 def test_template_range_beyond_the_galaxy_warns():
@@ -205,14 +212,14 @@ def test_template_range_beyond_the_galaxy_warns():
     matching rests on an assumption rather than a measurement.
     """
     with pytest.warns(UserWarning, match='outside the galaxy'):
-        templates.prepare(make_library(), make_galaxy(), TemplatePar())
+        templates.prepare(make_library(), make_galaxy(), **TemplatePar().to_kwargs())
 
 
 def test_galaxy_is_not_modified():
     """Preparation reads the galaxy; it never alters it."""
     galaxy = make_galaxy()
     before = galaxy.flux.copy(), galaxy.idsp.copy(), galaxy.log10lam0
-    prepare_quietly(make_library(), galaxy, TemplatePar())
+    prepare_quietly(make_library(), galaxy)
     assert np.array_equal(galaxy.flux, before[0]), 'Preparation altered the galaxy flux'
     assert np.array_equal(galaxy.idsp, before[1]), 'Preparation altered the galaxy resolution'
     assert galaxy.log10lam0 == before[2], 'Preparation altered the galaxy wavelength grid'
@@ -222,7 +229,7 @@ def test_library_is_not_modified():
     """Preparation returns a new set; the raw library is left alone."""
     library = make_library()
     before = library.flux.copy()
-    prepare_quietly(library, make_galaxy(), TemplatePar())
+    prepare_quietly(library, make_galaxy())
     assert np.array_equal(library.flux, before), 'Preparation altered the raw templates'
 
 
@@ -291,8 +298,12 @@ def test_unmatched_regions_are_masked_when_requested():
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        kept = templates.prepare(library, galaxy, TemplatePar(mask_unmatched_idsp=False))
-        masked = templates.prepare(library, galaxy, TemplatePar(mask_unmatched_idsp=True))
+        kept = templates.prepare(
+            library, galaxy, **TemplatePar(mask_unmatched_idsp=False).to_kwargs()
+        )
+        masked = templates.prepare(
+            library, galaxy, **TemplatePar(mask_unmatched_idsp=True).to_kwargs()
+        )
 
     assert kept.match.n_unmatched > 0, \
         'This test needs a configuration that leaves pixels unmatched'

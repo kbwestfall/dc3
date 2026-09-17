@@ -32,6 +32,7 @@ from .parset import ParSet
 
 
 __all__ = [
+    'TemplateLibraryPar',
     'TemplatePar',
     'ConvolvePar',
     'CorrelatePar',
@@ -44,6 +45,104 @@ __all__ = [
 ]
 
 
+class TemplateLibraryPar(ParSet):
+    """
+    Definition of a stellar template library as it is stored on disk.
+
+    This says *what* the library is and how to read it.  It is deliberately
+    separate from :class:`TemplatePar`, which says how the library is *prepared*
+    for fitting: the two change independently.  A library is a fixed property of
+    an installation, declared once and reused, whereas the preparation follows
+    from the galaxy data being fit.
+
+    Modelled on ``mangadap.proc.templatelibrary.TemplateLibraryDef``, which
+    solves the same problem.
+
+    .. note::
+
+        The reader that consumes these parameters is not yet written; see the
+        implementation record.  They are declared now because they fix the
+        configuration surface that :func:`~dc3.templates.prepare` sits behind.
+    """
+
+    default_key = 'library'
+    card_prefix = 'LIB'
+    api_doc = ':class:`~dc3.par.dc3par.TemplateLibraryPar`'
+    default_comment = 'Definition of the stellar template library.'
+
+    key: Annotated[str | None, Field(
+        default=None,
+        description='Keyword identifying the library.  It names the library in the output and '
+                    'is part of the key under which a prepared library is cached.'
+    )]
+    file_search: Annotated[str | None, Field(
+        default=None,
+        description='Search pattern, relative to the library root, matching the one-dimensional '
+                    'FITS spectra that make up the library.'
+    )]
+    fwhm: Annotated[float | None, Field(
+        default=None, gt=0.0,
+        description='FWHM of the resolution element, in angstroms, taken as constant with '
+                    'wavelength.  Superseded by resolution_ext where that is given.  This is '
+                    'converted to an instrumental dispersion in km/s on ingest, since that is '
+                    'the internal convention.'
+    )]
+    resolution_ext: Annotated[str | None, Field(
+        default=None,
+        description='Name of the extension holding the spectral resolution, R = lambda/dlambda, '
+                    'as a function of wavelength.  Supersedes fwhm.  Converted to an '
+                    'instrumental dispersion in km/s on ingest.'
+    )]
+    in_vacuum: Annotated[bool, Field(
+        default=False,
+        description='The library wavelengths are vacuum wavelengths.  If False they are air '
+                    'wavelengths and are converted on ingest.'
+    )]
+    wave_limit: Annotated[list[float] | None, Field(
+        default=None,
+        description='Two-element lower and upper wavelength limit, in angstroms, outside which '
+                    'the library spectra are not valid.  Omit it to use the full range of each '
+                    'spectrum; an individual end cannot be left unbounded.'
+    )]
+    lower_flux_limit: Annotated[float | None, Field(
+        default=None,
+        description='Smallest valid flux.  Pixels below this are masked, which is how libraries '
+                    'that pad their spectra with zeros are handled.'
+    )]
+    log10: Annotated[bool, Field(
+        default=False,
+        description='The library spectra are already sampled logarithmically in wavelength.  If '
+                    'False they are resampled on ingest.'
+    )]
+
+    @model_validator(mode='after')
+    def _check_wave_limit(self):
+        """
+        Check that the wavelength limit is a valid two-element range.
+
+        Returns
+        -------
+        TemplateLibraryPar
+            The validated parameter set.
+
+        Raises
+        ------
+        ValueError
+            Raised if the limit does not have two elements, or is not ordered.
+        """
+        if self.wave_limit is None:
+            return self
+        if len(self.wave_limit) != 2:
+            raise ValueError(
+                f'wave_limit must have exactly two elements; got {len(self.wave_limit)}.'
+            )
+        if self.wave_limit[0] >= self.wave_limit[1]:
+            raise ValueError(
+                f'wave_limit must be ordered; got {self.wave_limit}.'
+            )
+        return self
+
+
 class TemplatePar(ParSet):
     """
     Parameters governing template preparation.
@@ -53,6 +152,11 @@ class TemplatePar(ParSet):
     fiducial galaxy resolution, offset by a constant instrumental variance
     ``dvar_inst``; then resampling to the galaxy's sampling at an integer
     ``velscale_ratio``.
+
+    These are the keyword arguments of :func:`~dc3.templates.prepare`, one for
+    one, so the two are called as ``prepare(library, galaxy, **par.to_kwargs())``
+    and cannot drift apart without a test failing.  *What* library is prepared is
+    declared separately, by :class:`TemplateLibraryPar`.
     """
 
     default_key = 'template'
@@ -60,10 +164,6 @@ class TemplatePar(ParSet):
     api_doc = ':class:`~dc3.par.dc3par.TemplatePar`'
     default_comment = 'Template preparation, run once per execution.'
 
-    library: Annotated[str | None, Field(
-        default=None,
-        description='Key or path identifying the stellar template library to use.'
-    )]
     velscale_ratio: Annotated[int, Field(
         default=1, ge=1,
         description='Integer number of prepared-template pixels per galaxy pixel.  Oversampling '
@@ -98,6 +198,14 @@ class TemplatePar(ParSet):
                     'convolution, which reduces its interpolation error.  This is a different '
                     'knob from velscale_ratio, which oversamples the OUTPUT grid; the two '
                     'address different error terms and should not be conflated.'
+    )]
+    fiducial_method: Annotated[Literal['median', 'min', 'max'], Field(
+        default='median',
+        description='How the galaxy set is reduced to the single fiducial resolution the '
+                    'templates are matched to.  Unless every galaxy spectrum has the same '
+                    'resolution, the fiducial matches none of them exactly; "min" takes the '
+                    'highest resolution present and so makes dvar_inst most negative, "max" '
+                    'the lowest and so most positive.'
     )]
 
 
@@ -419,6 +527,9 @@ class DC3Par(ParSet):
     api_doc = ':class:`~dc3.par.dc3par.DC3Par`'
     default_comment = 'Parameters for a dc3 run.'
 
+    library: Annotated[TemplateLibraryPar, Field(
+        default_factory=TemplateLibraryPar, description='The stellar template library to use.'
+    )]
     template: Annotated[TemplatePar, Field(
         default_factory=TemplatePar, description='Template preparation.'
     )]

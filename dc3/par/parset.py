@@ -340,6 +340,50 @@ class ParSet(BaseModel):
         """
         return cls.model_validate(cfg)
 
+    def to_kwargs(self):
+        """
+        Return the parameters as keyword arguments for the function they configure.
+
+        Distinct from :func:`to_dict`, and the two are not interchangeable:
+
+        ==================  =========================================================
+        Method              For
+        ==================  =========================================================
+        :func:`to_dict`     Round-tripping to TOML and FITS headers, where a
+                            :class:`pathlib.Path` *must* become a string
+        :func:`to_kwargs`   Calling a function, where a :class:`pathlib.Path` must
+                            stay a :class:`pathlib.Path`
+        ==================  =========================================================
+
+        The intended use is to expand a parameter set over the function it
+        configures, so that the configuration keys and the function keywords are
+        the same names by construction:
+
+        .. code-block:: python
+
+            prepared = templates.prepare(library, galaxy, **par.template.to_kwargs())
+
+        Returns
+        -------
+        dict
+            The parameters, with their values as Python objects.
+
+        Raises
+        ------
+        DC3ParameterError
+            Raised if any parameter is itself a parameter set.  Such a result
+            could not be expanded over a function, since a function keyword is
+            never a parameter set; expand the nested member instead.
+        """
+        nested = type(self).nested()
+        if len(nested) > 0:
+            raise DC3ParameterError(
+                f'{type(self).__name__} contains nested parameter sets ({nested}), so it cannot '
+                'be expanded over a function.  Call to_kwargs on the nested member itself, for '
+                f'example {type(self).__name__.lower()}.{nested[0]}.to_kwargs().'
+            )
+        return self.model_dump(mode='python')
+
     # ------------------------------------------------------------------
     # Layered merge
     # ------------------------------------------------------------------
