@@ -435,7 +435,13 @@ provided for both the template and galaxy data are determined for the
 pre-pixelized data.  It will be up to the users to ensure they're providing the
 correct resolution measurement.
 
-(b) First, where does the \Delta^2/12 metric come from?  More generally, the correct path on this is currently unclear to me, particularly given the expectation from my response to (a) above.  I.e., I expect the resolution vectors to be provided pre-pixelized, and its unclear to me how the resampling propagates to this pre-pixelized measurement.  Nominally it should have no effect, but I expect there are practical limitations to this.  I expect we will need to characterize the effect empirically.
+(b) First, where does the \Delta^2/12 metric come from?  More generally, the
+correct path on this is currently unclear to me, particularly given the
+expectation from my response to (a) above.  I.e., I expect the resolution
+vectors to be provided pre-pixelized, and its unclear to me how the resampling
+propagates to this pre-pixelized measurement.  Nominally it should have no
+effect, but I expect there are practical limitations to this.  I expect we will
+need to characterize the effect empirically.
 
 ### 8.3
 
@@ -445,8 +451,6 @@ developers, but does not require a redetermination of the limit on every import.
 
 ### 8.4
 
-I like your suggestion of a constraints table.  The table should be ascii so that is directly human readable and writable.  I prefer fixed-width columnated format to ecsv, but ecsv is preferred over FITS.
-
-Two general things:
-    - I develop on a mac.
-    - imports at the top
+I like your suggestion of a constraints table.  The table should be ascii so
+that is directly human readable and writable.  I prefer fixed-width columnated
+format to ecsv, but ecsv is preferred over FITS.
