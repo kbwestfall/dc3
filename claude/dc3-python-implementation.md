@@ -177,7 +177,48 @@ reporting, cross-parameter validation, the layered merge, and the generated rst.
 under `-W error::DeprecationWarning`, which is what holds the item-access shims off pydantic's
 instance-level `model_fields` — deprecated in 2.11 and removed in 3.0.
 
-### `dc3/par/funcpar.py`, `dc3/par/dc3par.py` — ⬜ not started
+### `dc3/par/funcpar.py` — ✅ complete
+
+`FuncPar` derives its fields from a wrapped function's signature. Because `ParSet` is now
+pydantic-based, the injection happens in a **metaclass** (`FuncParMeta`, deriving from pydantic's
+`ModelMetaclass`) rather than in `__init_subclass__` as upstream does: pydantic collects fields
+from the class namespace *as the class is created*, so by the time `__init_subclass__` runs the
+collection is already done. The declaration syntax is unchanged from PypeIt's.
+
+Two implementation details worth knowing:
+
+- **The wrapped function is stored as a `staticmethod`.** A plain function assigned as a class
+  attribute becomes a bound method, so `instance.func` would pass the instance as the function's
+  first argument. The metaclass wraps it; there is a test asserting
+  `VarsmoothPar().func is ppxf_util.varsmooth`.
+- **A function with no keyword arguments is rejected** at class creation. `losvd_rfft` is the real
+  case — all eight parameters are positional — and it therefore needs a hand-written `ParSet`.
+
+**`api_doc` (was `doc_url`).** The attribute stays on `ParSet` rather than moving to `FuncPar`,
+and is defined generally: *where to read the authoritative API documentation for this parameter
+set*. Hand-written `dc3` sets use Sphinx syntax pointing at this package's own API docs;
+`FuncPar` subclasses use an intersphinx cross-reference or, where the dependency publishes no
+object inventory, a full URL — **ppxf forces the URL fallback**.
+
+Moving it to `FuncPar` was considered and rejected: its two uses sit *inside* `ParSet`'s recursive
+`config_lines` and `to_rst_table`, so an override would have to duplicate that logic or splice
+into `super()`'s output by string-matching the `[section]` line. Doing it properly would have
+meant adding generic extension hooks to `ParSet` — about 20 net lines to remove 6.
+
+`_plain_reference` strips Sphinx role markup for plain-text output, so a TOML comment reads
+`# See scipy.optimize.least_squares` rather than ``# See :func:`scipy.optimize.least_squares` ``.
+The rst path keeps the role intact so Sphinx resolves it to a link.
+
+**`check_declaration` now requires `api_doc` on every `FuncPar`.** This is not cosmetic: a
+`FuncPar`'s generated descriptions say nothing beyond naming the wrapped function, so the pointer
+upstream is the *only* documentation its parameters have.
+
+**A defect found by inspecting the output.** `config_lines` skipped any parameter whose value was
+`None`, since TOML has no null — which meant `max_nfev`, a declared knob of `LeastSquaresPar`, was
+invisible in the file meant to document it. Now emitted commented out as `# max_nfev = <unset>`:
+discoverable, still valid TOML, and it round-trips as unset.
+
+### `dc3/par/dc3par.py` — ⬜ not started
 
 ### The datamodel decision — ⬜ still open
 
@@ -215,6 +256,8 @@ is a one-off.
 | 1 | `ParSet` built on pydantic v2, not ported from PypeIt | The plan allowed either, to be settled by prototyping. Settled in pydantic's favour; see above. | ⬜ not yet |
 | 1 | `validate_declaration` lives in the test suite, not on `ParSet` | No user input can violate it — it constrains how a parameter set is *written*, so it belongs with the tests that enforce it. Now `dc3.tests.test_parset.check_declaration`. | ⬜ not yet |
 | 1 | Added `DC3CodingError` | Not in the plan. Separates faults in `dc3` itself from faults in its use, so a user seeing one knows whether to report a bug or fix their input. | ⬜ not yet |
+| 1 | `FuncPar` gains `api_doc`, required on every subclass | Not in the plan, which specified only that `FuncPar` exists. Its generated descriptions carry no information, so the pointer upstream is the only documentation its parameters have. | ⬜ not yet |
+| 1 | `FuncPar` uses a metaclass, not `__init_subclass__` | Forced by pydantic: fields are collected from the class namespace during class creation, before `__init_subclass__` runs. Declaration syntax is unchanged. | ⬜ not yet |
 
 ---
 
@@ -269,3 +312,12 @@ Tracks the fourteen verification items in the plan.
   `DC3CodingError`. Also added three conventions to `CLAUDE.md` at the user's request — explicit
   condition checks over truthiness, assertion messages on every test assert, and the three-tier
   split of commit message / release note / this document.
+- **2026-09-17** — **`FuncPar` complete** (58 tests). Recorded why it needs a metaclass under
+  pydantic, why the wrapped function is stored as a `staticmethod`, and that a wholly positional
+  function such as `losvd_rfft` is rejected outright. Recorded the `doc_url` → **`api_doc`**
+  rename and the decision to keep it on `ParSet` defined generally, rather than moving it to
+  `FuncPar` — moving it would have required generic extension hooks on `ParSet`, about 20 net
+  lines to remove 6. Added `_plain_reference`, which strips Sphinx role markup so a TOML comment
+  reads as plain text while the rst path keeps the link. Fixed a discoverability defect found by
+  inspecting the emitted TOML: parameters defaulting to `None` were omitted entirely, hiding
+  declared knobs such as `max_nfev`; they are now emitted commented out.

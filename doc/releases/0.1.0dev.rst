@@ -44,5 +44,8 @@ Functionality/Performance Improvements and Additions
   round-trip, a layered default/file/command-line merge, and TOML configuration
   files that carry parameter descriptions as comments.
 
+- Added ``dc3.par.FuncPar``, a ``ParSet`` whose parameters are derived from the
+  signature of a wrapped third-party function.
+
 - Added ``DC3CodingError``, raised for a fault in ``dc3`` itself rather than in
   how it is used.
