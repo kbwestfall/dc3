@@ -1,0 +1,448 @@
+
+# Original prompt:
+
+I have a C++ project that I have not touched in more than 10 years.  I would like to port it to python and update it.  The current working directory, `/Users/westfall/Work/packages/dc3`, is largely empty but it should become the top-level directory of a git repository for the updated code.
+
+The core of the code base is currently located at `/Users/westfallold/Work/scripts/dc3`, but it also uses "library" code located in other directories in `/Users/westfallold/Work/scripts`.  The scientific paper describing the code can be found at `/Users/westfall/Work/papers/dmIII/Westfall_etal_2011_ApJS_193_21.pdf`.  First, please read the paper for background on the purpose of the code base.
+
+Second, provide a full report on the current state of the code.  Identify all dependencies and map the control flow of the various executables, including a description of how the code is compiled and used.  Where relevant, reference the Westfall et al. (2011) paper for context.  Write the report to `claude/dc3-original-implementation.md`.
+
+Third, construct a phased development plan for rewriting and refactoring the code into a python package.  Use the pypeit package at `/Users/westfall/Work/packages/pypeit` as a template package structure.  The refactored package should leverage standard python libraries and, specifically, scientific python packages like numpy, scipy, matplotlib, astropy, specutils, etc.  Three specific items to note when developing this plan:
+
+(1) The C++ code heavily leveraged code provided by the Numerical Recipes book.  Due to licensing issues, this prevented the code from being open source in the past.  It also meant that I used non-standard vector and matrix classes.  The refactor should heavily leverage existing python libraries, which I expect will greatly reduce the size of the code base and make it easier to maintain.  The code will be fully open source and be distributed with a 3-clause BSD license.
+
+(2) The fitting approach used is generally slow.  Two specific avenues that I would like you to explore in terms of improving computation speed are (a) use of the FFTW library and (b) parallelization via multiprocessing.  As a template for the former, see the nirvana code base at `/Users/westfall/Work/packages/nirvana`.  Additionally, explore ways to incorporate automatic differentiation for model optimization using standard packages, like JAX.
+
+(3) One enhancement I would like to make is that the code currently only allows a single template spectrum to be fit to each galaxy spectrum.  Please explore methods that will allow users to provide a full set of template that are then optimally mixed to provide the best fit to the galaxy spectrum.
+
+It is also worth referencing the MaNGA Data Analysis Pipeline code at `/Users/westfall/Work/packages/mangadap`, which uses the `ppxf` package to fit galaxy spectra.  The refactor of `dc3` does not necessarily need to follow any of the specific patterns seen in that code base, but it is a useful reference for how it may be integrated into a larger workflow for fitting many galaxy spectra.
+
+---
+
+# Data:
+
+Example data from old run of early versions of DC3 on SparsePak data:
+
+/Volumes/seshat/SPSPK_rdx/kinematics/mg/U06918/vdf_dec08
+
+Example data from more recent run of DC3_express on SparsePak data:
+
+/Volumes/seshat/data/diskmass/PPK_rdx
+/Volumes/seshat/data/diskmass/PPK_rdx/U06918/vdf_feb13
+
+---
+
+# Comments on first drafts of `original-implementation` and `port-plan` docs:
+
+- Backwards compatibility should *not* factor into the design of the ported
+  code, except where it is convenient.  This includes both the input/outputs and
+  the CLI.  This code is not (and was not) widely used.
+
+- In "Features the port should add" in the "original implementation" doc, the
+  third bullet should be given low priority.  I.e., the port should not build
+  code that precludes users from providing an empirical form for the
+  instrumental line-spread function, but we don't need to implement it
+  fully now.
+
+- `ParSet`:
+
+    - Note the recent refactor of ParSet in PypeIt; see the `parset_refactor`
+      branch in `~/Work/packages/pypeit`
+
+    - Also note the `funcpar_update` branch in that same checkout of the
+      `pypeit` repo that adds the function signature wrapping.  Warning:
+      `funcpar_update` needs to be rebased to `parset_refactor`.  See relevant
+      docs in `PypeIt-development-suite`.
+
+    - Beyond both of these points, consider refactoring `ParSet` to leverage
+      `pydantic`.
+
+    - Prefer `tomllib` over `ConfigObj` for configuration/parameter files
+        - as opposed to `mangadap`, whenever possible there should be a direct
+          1:1 mapping between parameters in any configuration file and the
+          parameter used throughout the code.
+
+    - Maintain ability to automatically generate documentation
+
+- `DataContainer`:
+
+    - I'm not sure that we should adopt `pypeit.datamodel.DataContainer`
+      wholesale.
+
+    - Use this opportunity to reconsider its design.  Similar to `ParSet`,
+      consider using `pydantic` in a significant refactor.
+
+    - Consider separating the single class into two concepts into two classes:
+      (1) I/O infrastructure, (2) strict imposition of a specific datamodel
+
+- Plan to use `specutils` for I/O, but then ingest the parsed `specutils`
+  objects into bespoke data objects that are more performant.  This could use
+  whatever this repo's version of `DataContainer` ends up being, but the
+  important part is that the internal format of the data be performant.
+
+- Explore making `ppxf` a dependency so that we can use some tools directly with
+  updates to `mangadap` functionality; limits the need to port some of the code
+  in `fitfunc.cpp`.  Specifically,
+    - resolution matching; i.e., variable-sigma convolution
+    - analytic FFT of the LOSVD using both Gaussian and GH parameterizations
+
+- Repurpose/Refactor much of the `mangadap` infrastructure that is used to check
+  and prepare galaxy spectra and templates for fitting with `ppxf`; much of the functionality overlaps.
+
+- Plan to adopt `TemplateLibrary` from `mangadap` nearly wholesale
+    - Mimic the resolution matching approach
+    - Use `mangadap.util.sampling.Resample`. (Also present in `pypeit`)
+    - A potential upstream path is to migrate `TemplateLibrary` into
+      `specutils`.
+
+- In addition to `BitMask` from `pypeit`/`mangadap`, explore using
+  `BitMaskArray` from `pypeit` (modulo the refactoring of `DataContainer`).
+
+- Explore de-redshifting the galaxy spectrum before the fit by an input or guess
+  redshift
+
+- Explore using `pypeit.core.bpsline` for continuum modeling.
+
+- Allow the user to select either a relatively fast chi-square minimization
+  approach (or differential evolution) and a MCMC approach via broadly used
+  packages that implement Hamiltonian or Nested sampling.
+
+- Completely rethink output datamodel that prefers FITS file output over ascii
+  tables.
+
+- Plots:
+    - We should divide these into tiers that the user selects, where one of the
+      tiers is simply to produce no plots at all.
+
+    - We should have post-processing scripts that can correctly reproduce any of
+      the QA plots skipped during a run of the code, just based on the
+      input/output data products.  Some re-computations are okay, but they
+      should be entirely deterministic and computationally inexpensive.
+
+- Will be useful to have small scripts or execution modes that allow the user to
+  create and inspect the cross-correlations and measure asymmetry metrics before
+  fitting.
+
+- Open questions:
+
+    - Keep asymmetry metrics as diagnostic outputs for now.  However, we may
+      want to enable a mode where they are calculated as the fit proceeds so
+      that we can track their improvement.
+
+    - The default should be to produce analytic covariance-based errors based on
+      the precision matrix that is naturally produced by the least-squares
+      algorithm.  However, I'd like the user to be able to select an MCMC
+      approach, which will naturally produce errors based on the posterior
+      distribution.  We should also include a separate script that allows the
+      user to generate MC errors from repeated fits.
+
+    - Agreed.
+
+    - Right.  The `Resample` class allows for direct computation of the
+      correlation matrix of the spectrum (assuming the input spectrum has
+      uncorrelated pixels, which is dubious).  However, I expect that direct
+      inclusion of the spectral covariance in the modeling will be prohibitively
+      expensive (but I could be wrong).  For now, we should continue to ignore
+      spectral covariance.
+
+    - Agreed.
+
+---
+
+# Response to `plan-reassessment` doc
+
+## Items 1 - 3:
+
+Treatment of resampling and resolution matching are subtle.
+
+- The fitting code should never manipulate the flux distribution within the
+  provided galaxy spectrum.  In terms of item 3, this contradicts our initial
+  concept for de-redshifting the galaxy spectrum before beginning the fit
+  iterations.  However, given the logarithmic sampling of the spectra in
+  wavelength, we can recast this as an *approximate* de-reshifting (as you say,
+  we'll be fitting the velocity offset anyway) using a simple pixel shift and
+  truncation, not a *redistribution* of flux within the spectrum.  This shift
+  and/or truncation can then be analytically propagated to the measured velocity
+  offset.
+
+- There will always be a difference in resolution between the template spectra
+  and the galaxy spectrum (as described in W19).  Also, although it may be
+  advantageous to use templates that have higher resolution than the galaxy
+  spectra, it is not always possible.  Importantly, any resolution matching
+  cannot involve a deconvolution because it leads to amplified noise.
+
+- Because of the difference in computational expense between convolution by a
+  wavelength-independent vs. wavelength-dependent sigma, the model evaluations
+  internal to the fitting iterations prefer to use a wavelength-independent
+  kernel.  This means the resolution matching step is a preparatory step before
+  the fit is started.  But, acknowledging the previous two items, this
+  preparatory step is not always possible, depending on the resolution of the
+  template and galaxy spectra.  For item 2 specifically, this means I agree with
+  the provided recommendation.  And, as I state below, the important thing is
+  that whatever choice is made is correctly propagated through to the code used
+  to determine the velocity dispersion corrections provided to the user.
+
+- Preparation of the template spectra is a combination of both resolution
+  matching *and* resampling (i.e., the pixel scale of the templates should match
+  the galaxy data).  These two operations are not independent.  I.e., if the
+  difference in resolution is large enough, resampling the template spectra to
+  match the galaxy data will dramatically degrade its effective resolution
+  (Nyquist sampling of the line-spread function).  This both limits the
+  practical resolution offset allowed for the fit-prepared templates, and may
+  motivate an oversampling of the template spectra that are then downgraded
+  during the fitting process.  The latter is possible in `ppxf`, and DC3 could
+  do the same in the construction of the B spectrum.
+
+- The stellar velocity dispersion in galaxies is always non-zero.  This means
+  there is always a little wiggle room that a user may be willing to take
+  advantage of when trying to match the resolution of the template spectra to
+  the galaxy spectra up to some pedestal offset.  If the pedestal must put the
+  templates at a systematically lower resolution than the galaxy spectra, this
+  imposes a floor on the measurable stellar velocity dispersion.  The difference
+  between W11 and W19 is, I would say, largely an issue of framing.  In MaNGA,
+  we had templates that were higher resolution than the galaxy spectra, so we
+  could adopt a *positive* \delta\sigma_inst^2.  In the DiskMass survey, the
+  template were observed with the same instrument as the galaxy data, but
+  slightly different conditions in the system could lead to small resolution
+  differences.  This meant that we tended to need to lower the resolution in the
+  templates to keep a pedestal offset, such that we were effectively adopting a
+  *negative* \delta\sigma_inst^2 (note the exponent).  In the DMS, this floor
+  was seen as an observational limitation; i.e., a dispersion measurement below
+  the floor meant that the dispersion was not measurable with the observational
+  data.  This new version of DC3 should be able to track both cases, both
+  positive and negative \delta\sigma_inst^2, but a warning needs to be issued
+  when it is negative.  Perhaps we should adopt different nomenclature than
+  \delta\sigma_inst^2, adopting something like a variance so we don't need to
+  keep tracking the square and avoid the ambiguity of the imaginary number when
+  the quantity is negative.
+
+Having said all that, the proposed design in item 1 is generally my preferred
+approach.  That is, the default should be to *try* to impose a constant offset
+between the spectral resolution of the template and galaxy spectra, with the
+template at higher resolution, if possible.  However, in general, I think users
+will want to define the minimum sigma in the wavelength-dependent convolution
+kernel instead of defining \delta directly; this is the approach taken for
+setting up the instrumental dispersion of the emission-line templates in the
+`mangadap` (see the `etpl_sinst*` objects in `mangdap.proc.sasuke.Sasuke.fit`).
+With the significant caveat concerning how the pixelization changes the
+effective resolution, users will generally want to make \delta as large as
+possible, and they should not be expected to know the correct value off-hand.
+
+Whatever choice is made here, the most important thing is ensuring that this
+choice is propagated through the analysis that determines the
+velocity-dispersion corrections.
+
+In the limit where the velocity dispersion is "undetermined," it should be up to
+the user whether or not they want to refit the spectra by fixing the *measured*
+velocity dispersion to be 0.  In terms of hooks in the code, this means adding
+the ability to fix the kinematic parameters to an input value and only fitting a
+subset of the spectra provided.  At least for now, I don't think this means, e.g.,
+adding an optional path that automatically preforms this refitting if the user
+toggles a boolean input parameter.
+
+## Item 4.7:
+
+First, I think the discussion above means that `varsmooth` should not be part of
+the fit cost function, but correct me if I'm wrong.
+
+Regarding reimplementation of `losvd_rfft`, what is our recourse on the
+Gauss-Hermite function if JAX is used?  Would a re-implementation of
+`losvd_rfft` that is JAX-traceable breach `ppxf`'s non-vendoring rule?
+
+## Item 4.8:
+
+Yes, this is worth mentioning, but the same is true of the templates used in
+`ppxf`.
+
+## Item 5:
+
+None of the following are hard requirements.  We should be open to revisiting
+them as we develop the code.
+
+5.1: For now, we should leverage the templates in the `mangadap` repo.  Notably,
+the templates used in the DiskMass survey are not distributed.  Some of the
+templates are at `/Volumes/seshat/data/diskmass/mab_jul05_templates/Mg`;
+however, I'm unsure of their provenance.  There is README that may be useful.
+
+5.2: As alluded to in my response to items 1-3, the default value for \delta
+should be the largest possible, but I don't think that is the parameter we
+should expose to the user.  See my comments there.  However, to simplify your
+last comment about \delta being spectrum dependent, we should expect \delta to
+be the same for all spectra to be fit.  I.e., for each execution of the main
+fitting script, we should only manipulate the resolution and sampling of the
+template spectra once.
+
+5.3: The outermost function should assume multiple spectra are provided, but it
+should be able to operate on a single spectrum.  The innermost function ---
+i.e., the function that is called to execute the fit after all the prep work has
+been completed --- should operate on a single spectrum only.  The innermost
+function, to my mind, represents the natural place for multiprocessing hooks.
+
+5.4: As already stated in the plan doc, let's plan to pull phase 7 forward.  The
+current doc notes that some aspects of phase 7 should be pulled forward to phase
+4, but that others may remain in phase 7.  Please reassess.  And, yes, please
+check W11 again for relevant measurement precision
+
+5.5: Agreed that the current framing is likely wrong.  See my comments on items
+1-3.
+
+5.6:
+
+    - The template(s) should always be resampled to the same wavelength grid as
+      the galaxy spectra, up to an integer ratio in the number of samples.  The
+      approach should mimic the `velscale_ratio` parameter in `ppxf`.  See my
+      comments in the 4th bullet in my response to items 1-3.
+
+    - Keep the path that doesn't require errors.  Ultimately, we may want to add
+      a path that estimates the errors based on wavelength-dependent (moving
+      window) measurements of the standard deviation in the model residuals.
+      This should take the form of a post processing script; i.e., the workflow
+      would be run the modeling without errors, run the script that estimates
+      the errors, re-run the modeling with the estimated errors.  Leave this as
+      a future development path.
+
+    - I would suggest dropping the size estimate.  It's not a concern in whether
+      or not I pursue the project.
+
+    - Do not include test data in the `tests/` directory; i.e., there should be
+      no `dc3/tests/data/` directory.
+
+## Responses to "Follow-up Questions"
+
+This responds to questions asked after the first revision of the
+`plan-reassessment.md` doc, in its section 7.
+
+### 7.1
+
+Please read 
+
+`/Users/westfallold/Work/literature/Cappellari_2017_MNRAS_466_798.pdf`
+
+for useful context.  This is the paper where Michele first introduces the
+analytic FFT of the Gaussian and Gauss-Hermite convolution kernels into `ppxf`.
+
+Thanks for pointing out that I wasn't being clear on the "minimum sigma;" I
+think pointing to the `Sasuke` class may have simply confused the issue.  To
+directly answer your question, I was referring to (a); however, it is worth
+being explicit about a few things.
+
+The template preparation steps should be as follows (this does not necessarily
+follow the algorithm currently used in the C++ DC3 code):
+
+Step 1: Perform any requested resolution matching of the template spectra to the
+galaxy spectra.
+
+Step 2: Resample the (convolved) template spectra to match the sampling of the
+templates, up to a user-defined oversampling (`velscale_ratio`).
+
+Note that Step 1 will only ever be approximate.  A single resolution matching
+operation will be applied to all templates once based on a *fiducial* measure of
+the spectral resolution of the galaxy data.  Unless all galaxy spectra have
+exactly the same spectral resolution (e.g., the spectra in each MaNGA
+observation did not), this *fiducial* spectral resolution will not exactly match
+any given galaxy spectrum that should be fit.  Importantly, Step 2 will *also*
+alter the effective resolution of the templates; the latter is something
+`mangadap` has never accounted for.  This means that, regardless of the
+resolution matching approach, calculation of velocity-dispersion corrections
+will always be an important step.
+
+When the user requests resolution matching, we should plan to follow the
+approach described by Appendix A in W19 (cf.
+`mangadap.util.resolution.SpectralResolution.GaussianKernelDifference`) with
+three caveats.  (1) A pedestal offset (option 2, W19 A) should be the default
+approach, where the pedestal is determined by the user's choice of
+\epsilon_\sigma.  (2) The code should
+adjust the target resolution for the template spectrum to allow for a *negative*
+`dvar_inst` to avoid or minimize the span of spectral regions that cannot meet the
+provided target resolution.  (3) For regions of the template spectrum that
+cannot meet the target spectral resolution, we should allow the user to choose
+whether or not those regions should be masked.
+
+All told, I think this means we need three parameters:
+
+- `velscale_ratio`: the integer number of pixels in the prepared template
+  spectra that map to a single pixel in the galaxy spectra (1 by default)
+
+- `epsilon_sigma`: the minimum viable dispersion of the Gaussian convolution
+  kernel.  Cappellari (2017) argues that, at least mathematically, the analytic
+  FFT approach allows this to be 0. (0 by default)
+
+- `sigma_floor`: the maximum floor allowed to accommodate spectral regions in
+  the template spectra with lower resolution than the galaxy data.  This is used
+  to set the minimum (negative) value of dvar_inst. (0 by default)
+
+Log messages should warn the user when:
+
+- the resampled template spectrum is not Nyquist sampled (`velscale_ratio`
+  should be increased)
+
+- spectral regions in the template cannot be matched to the target spectral
+  resolution.
+
+### 7.2
+
+Yes, `ppxf` should stay a hard dependency for now.  A core difference between
+`ppxf_util.varsmooth` and `mangadap`'s `convolution_variable_sigma` is that the
+former uses the more robust analytic equation for the FFT of a Gaussian.  This
+is the preferred approach.
+
+### 7.3
+
+Yes, let's stick with `dvar_inst`, and the sign convention matches my intent.
+
+### 7.4
+
+Your read is consistent with my intent, however, we will need to be clever about
+how these constraints are passed to the program given the level of granularity
+needed when large batches of spectra are passed to the outer loop.
+
+### 7.5
+
+Yes, replace with the Fourier phase shift.  It is a valuable departure from W11.
+
+### 7.6
+
+In my response to 7.1, I note the default `velscale_ratio` should be 1, but I
+like the option of having the code determine a reasonable value automatically.
+Despite the additional complexity, this will save users from having to determine
+a good value and defer to DC3's approach.  A reasonable approach is to ensure
+that the FWHM of the spectral LSF is sampled by at least 2 pixels.
+
+### 7.7
+
+We should follow the `PypeIt` pattern, but not via a separate development suite
+repo.  PypeIt uses it's cache system to access test data that is located in
+`pypeit/data/tests`.  The test data are not gitignored (the cache accesses them
+via GitHub if they are not local), but that are not included in the package
+release (i.e., the `pypeit/data/tests` directory is excluded by the
+`MANIFEST.in` file).
+
+## Responses to "New follow-up questions"
+
+This responds to questions asked after the 2nd revision of the
+`plan-reassessment.md` doc, in its section 8.
+
+### 8.1
+
+Yes, your proposed resolution was my intent.
+
+### 8.2
+
+(a) Yes, that is the intent here.  However, this is mostly a requirement for
+appropriate use of the code and something we need to ensure is properly
+documented.  That is, the code will assume that the instrumental dispersion
+provided for both the template and galaxy data are determined for the
+pre-pixelized data.  It will be up to the users to ensure they're providing the
+correct resolution measurement.
+
+(b) First, where does the \Delta^2/12 metric come from?  More generally, the correct path on this is currently unclear to me, particularly given the expectation from my response to (a) above.  I.e., I expect the resolution vectors to be provided pre-pixelized, and its unclear to me how the resampling propagates to this pre-pixelized measurement.  Nominally it should have no effect, but I expect there are practical limitations to this.  I expect we will need to characterize the effect empirically.
+
+### 8.3
+
+Let's hard-code the current 0.1 pixel limit but include a test at asserts this
+is correct.  That should be sufficient to catch changes to `ppxf` by the
+developers, but does not require a redetermination of the limit on every import.
+
+### 8.4
+
+I like your suggestion of a constraints table.  The table should be ascii so that is directly human readable and writable.  I prefer fixed-width columnated format to ecsv, but ecsv is preferred over FITS.

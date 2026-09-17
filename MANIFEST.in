@@ -1,0 +1,25 @@
+# Remove directories
+prune .github
+prune build
+prune dist
+prune doc
+prune claude
+
+# Remove file types
+global-exclude *.pyc *.o *.so *.DS_Store *.ipynb
+
+# Remove large data sets
+# NOTE: The exclusions below are by FILE TYPE, not by directory, so that the
+# README and provenance manifest in dc3/data/tests travel with the wheel while
+# the bulk fixture data does not.  Provenance must be readable even from an
+# installed package with no data.
+#
+# If you exclude more data from the dc3/data directory, update the
+# defined_paths dictionary in dc3.pkg.dc3data.DC3DataPaths to match.  This is
+# asserted by a test (dc3/tests/test_dc3data.py), not merely by this comment.
+recursive-exclude dc3/data/tests *.gz *.fits *.npz *.db
+
+# Remove individual files
+exclude .gitignore
+exclude readthedocs.yml
+exclude tox.ini

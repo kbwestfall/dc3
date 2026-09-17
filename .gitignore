@@ -1,0 +1,36 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# setuptools_scm writes this at build time
+dc3/pkg/version.py
+
+# Testing / coverage
+.tox/
+.tmp/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Sphinx
+doc/_build/
+doc/api/
+doc/include/*.rst
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Scratch
+tmp/
+scratch/

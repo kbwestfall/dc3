@@ -1,0 +1,138 @@
+[project]
+name = "dc3"
+dynamic = ["version"]
+authors = [
+    { name = "Kyle B. Westfall", email = "westfall@ucolick.org" }
+]
+license = {file = "LICENSE.rst"}
+description = "DC3: Detector-Censored Cross-Correlation"
+keywords = [
+    "dc3",
+    "DC3",
+    "astronomy",
+    "spectroscopy",
+    "cross-correlation",
+    "velocity dispersion",
+]
+readme = "README.rst"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+requires-python = ">=3.12,<3.15"
+
+# NOTE: ppxf is a hard dependency but is NOT redistributable; see
+# licenses/README.rst.  Its imports are confined to dc3/core/resolution.py and
+# dc3/core/losvd.py so that the ppxf-dependent paths can be made optional if a
+# downstream packager ever needs that.
+dependencies = [
+    "astropy>=7.0",
+    "matplotlib>=3.7",
+    "numpy>=2.0",
+    "packaging>=22.0",
+    "ppxf>=9.5.0",
+    "scipy>=1.11",
+    "specutils>=2.0",
+]
+
+[project.optional-dependencies]
+fftw = [
+    "pyfftw>=0.13",
+]
+jax = [
+    "jax>=0.4.30",
+]
+mcmc = [
+    # The specific sampler is deferred; emcee is the lightest placeholder and
+    # the seam is a thin adapter.  See the port plan, Phase 4.
+    "emcee>=3.1",
+]
+test = [
+    "coverage",
+    # pygit2 lets the cache resolve the checked-out branch, so that a test
+    # fetching a fixture added on a feature branch gets it from THAT branch
+    # rather than from main.  Without it the branch silently defaults and CI
+    # fails on any branch that adds data.  See dc3.pkg.cache.git_branch.
+    "pygit2",
+    "pytest>=7.0.0",
+    "pytest-astropy",
+    "pytest-cov",
+    "tox",
+]
+docs = [
+    "docutils<0.22",
+    "numpydoc>=1.8",
+    "sphinx>6",
+    "sphinx-automodapi",
+    "sphinx-design",
+    "sphinx_rtd_theme==3.0.0",
+]
+dev = [
+    "dc3[fftw,jax,mcmc,test,docs]",
+]
+
+[project.urls]
+Repository = "https://github.com/kbwestfall/dc3"
+Documentation = "https://dc3.readthedocs.io/"
+
+# NOTE: Entry points are added here as each script is actually written; see the
+# port plan, Phase 4, for the full intended set (dc3_fit, dc3_xcorr, dc3_qa,
+# dc3_mcerr, dc3_benchmark, dc3_stage_testdata).
+[project.scripts]
+
+[build-system]
+requires = [
+    "setuptools>=65",
+    "setuptools_scm>=8",
+]
+build-backend = 'setuptools.build_meta'
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages]
+find = {}
+
+[tool.setuptools_scm]
+version_file = "dc3/pkg/version.py"
+
+[tool.pytest.ini_options]
+minversion = 7.0
+testpaths = [
+    "dc3",
+]
+markers = [
+    "requires_pyfftw: test requires the optional pyfftw dependency",
+    "requires_jax: test requires the optional jax dependency",
+    "requires_testdata: test requires fixture data that is not bundled in the wheel",
+]
+
+[tool.coverage]
+
+    [tool.coverage.run]
+        omit = [
+            "dc3/conftest.py",
+            "dc3/tests/*",
+            "dc3/pkg/version*",
+            "*/dc3/conftest.py",
+            "*/dc3/tests/*",
+            "*/dc3/pkg/version*",
+        ]
+
+    [tool.coverage.report]
+        exclude_lines = [
+            "pragma: no cover",
+            "except ImportError",
+            "raise AssertionError",
+            "raise NotImplementedError",
+            "'def main(.*):'",
+        ]

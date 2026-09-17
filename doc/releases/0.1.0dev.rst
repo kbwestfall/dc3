@@ -1,0 +1,37 @@
+
+Version 0.1.0dev
+================
+
+The first development version of ``dc3``, a Python reimplementation of the
+detector-censored cross-correlation method of Westfall, Bershady & Verheijen
+(2011, ApJS 193, 21).
+
+Breaking Changes
+----------------
+
+- None. This is the initial development version; there is no prior release, and
+  backwards compatibility with the original C++ implementation's file formats
+  and command-line interface is explicitly not a design goal.
+
+Documentation Updates
+---------------------
+
+- Added ``licenses/README.rst``, describing the terms of the third-party code
+  ``dc3`` adapts (PypeIt, ``mangadap``) and the redistribution prohibition on
+  ``ppxf``, which is a hard dependency but must never be vendored.
+
+Dependency Changes
+------------------
+
+- Supports python 3.12, 3.13, and 3.14.
+
+- ``ppxf`` is a hard dependency, floored at 9.5.0, for
+  ``ppxf_util.varsmooth`` and ``ppxf_util.losvd_rfft``. Both the floor and the
+  latest release are pinned as explicit ``tox`` axes, since both functions sit
+  on the critical path.
+
+Functionality/Performance Improvements and Additions
+----------------------------------------------------
+
+- Initial repository scaffold: build configuration, licensing, continuous
+  integration, and the ``dc3`` package tree.
