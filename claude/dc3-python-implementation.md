@@ -720,3 +720,10 @@ Tracks the fourteen verification items in the plan.
   because `numpy.gradient` of a realistic logarithmic grid carries floating-point noise. That is
   luck, not design, so it is now pinned: were it to stop holding, every `dvar_inst` from such a run
   would be silently wrong.
+- **2026-09-17** — Confirmed the upstream measurement against a **pixelated** Gaussian — one
+  integrated over the pixel width, as a spectrograph records, rather than evaluated at the pixel
+  centres — at the user's suggestion. The two agree to four decimal places for probe widths from 1
+  to 8 pixels, which is expected since pixelization adds `dx²/12` to the variance of input and
+  output alike and cancels in the quadrature difference. Added to the reproduction script, so the
+  result cannot be attributed to an unphysical line profile. Also softened the report's
+  characterization of the clip, which read as more judgemental than the evidence warrants.

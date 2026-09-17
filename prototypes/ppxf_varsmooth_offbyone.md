@@ -94,19 +94,39 @@ Two ways an exactly uniform `sig` arises in ordinary use:
 1. **Any request below the 0.1-pixel clip.** `clip` replaces every smaller value
    with the same literal, which forces exact uniformity. This is why a request of
    0.001, 0.05 or 0.09 px is applied as ≈ 0.71 px rather than as the requested
-   value or as the 0.1 px the clip implies. The clip is therefore not a floor on
-   the applied kernel, as one might reasonably expect — it is a trapdoor.
+   value. Note that this is also not the 0.1 px that the clip on its own would
+   suggest, so a caller reading the source may still be surprised by the result.
 
 2. **A genuinely constant kernel on a regular abscissa.** This is not exotic: it
    is what one gets when two spectral resolutions differ by a constant, which is
    a common case in resolution matching. It escapes only when `np.gradient` of
    the abscissa happens to carry floating-point noise.
 
-In both cases the routine returns a plausible spectrum and reports nothing, so a
-downstream instrumental-resolution budget computed from the *requested* kernel is
-wrong by the difference, with no diagnostic.
+In both cases the routine returns a plausible spectrum, so a downstream
+instrumental-resolution budget computed from the *requested* kernel is wrong by
+the difference.
 
 ## Notes
+
+- **The result does not depend on the probe.** The measurement above uses a
+  Gaussian evaluated at the pixel centres. Repeating it with a Gaussian
+  *integrated over the pixel width* — what a spectrograph actually records —
+  gives the same answer to four decimal places, for probe widths from 1 to 8
+  pixels:
+
+  ```
+      probe sigma     profile      as-is   n restored
+              1.0     sampled     0.8667       0.5000
+              1.0   pixelated     0.8667       0.5000
+              4.0     sampled     0.8666       0.5000
+              4.0   pixelated     0.8666       0.5000
+              8.0     sampled     0.8662       0.5000
+              8.0   pixelated     0.8662       0.5000
+  ```
+
+  This is expected: pixelization adds dx²/12 to the variance of the input and
+  the output alike, so it cancels in the quadrature difference. It is included
+  to show that the effect is not an artefact of an unphysical line profile.
 
 - **`oversample` does not help.** It reduces the error but converges to ≈ 0.65 px
   rather than to the requested 0.5 px, because it replaces the missing-sample

@@ -18,11 +18,61 @@ Run:  python ppxf_varsmooth_offbyone.py
 
 import numpy as np
 from ppxf import ppxf_util
+from scipy import special
 
 
 NPIX = 800
 SIGMA_IN = 4.0          # width of the probe line, in pixels; comfortably resolved
 INDEX = np.arange(NPIX, dtype=float)
+
+
+def sampled_gaussian(x, c=0.0, s=1.0):
+    """
+    Return a Gaussian evaluated at the pixel centres.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Coordinates.
+    c : float, optional
+        Centre.
+    s : float, optional
+        Dispersion.
+
+    Returns
+    -------
+    numpy.ndarray
+        The profile.
+    """
+    return np.exp(-(x - c) ** 2 / s ** 2 / 2) / np.sqrt(2 * np.pi) / s
+
+
+def pixelated_gaussian(x, c=0.0, s=1.0):
+    """
+    Return a Gaussian integrated over the pixel width.
+
+    This is what a spectrograph actually records, as distinct from the profile
+    evaluated at the pixel centres.  It is included so that the measurement
+    below cannot be attributed to an unphysical probe; see :func:`main`.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Coordinates, linearly sampled.
+    c : float, optional
+        Centre.
+    s : float, optional
+        Dispersion.
+
+    Returns
+    -------
+    numpy.ndarray
+        The profile.
+    """
+    n = np.sqrt(2.) * s
+    d = np.asarray(x) - c
+    dx = np.mean(np.diff(x))
+    return (special.erf((d + dx / 2.) / n) - special.erf((d - dx / 2.) / n)) / 2. / dx
 
 
 def probe_line():
@@ -37,7 +87,7 @@ def probe_line():
     numpy.ndarray
         The probe spectrum.
     """
-    return np.exp(-0.5 * np.square((INDEX - NPIX / 2) / SIGMA_IN))
+    return sampled_gaussian(INDEX, c=NPIX / 2, s=SIGMA_IN)
 
 
 def realised_width(convolved):
@@ -122,6 +172,76 @@ def report(label, x, sig_x, want, oversample=1):
     print(f'  {flag}  {label:<44} {grid}   want {want:.3f}, got {got:.3f} px')
 
 
+def compare_profiles(x):
+    """
+    Check that the result does not depend on the shape of the probe line.
+
+    A sampled Gaussian and one integrated over the pixel width differ by a
+    variance of dx^2/12.  That term appears in the input and the output alike,
+    so it cancels in the quadrature difference and the measured kernel is the
+    same either way -- which is what this confirms, across probe widths from
+    marginally to comfortably resolved.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        An abscissa whose gradient is exactly uniform.
+    """
+    uniform = np.full(NPIX, 0.5)
+    perturbed = uniform.copy()
+    perturbed[NPIX // 2] *= 1 - 1e-12
+
+    print('\n  The measurement does not depend on the probe profile:')
+    print(f'    {"probe sigma":>11}  {"profile":>10}  {"as-is":>9}  {"n restored":>11}')
+    for sigma_in in [1.0, 2.0, 4.0, 8.0]:
+        for name, profile in [('sampled', sampled_gaussian), ('pixelated', pixelated_gaussian)]:
+            y = profile(INDEX, c=NPIX / 2, s=sigma_in)
+            print(
+                f'    {sigma_in:11.1f}  {name:>10}  {kernel_from_probe(x, y, uniform):9.4f}  '
+                f'{kernel_from_probe(x, y, perturbed):11.4f}'
+            )
+
+
+def kernel_from_probe(x, y, sig_x):
+    """
+    Convolve one probe and return the kernel width that was applied.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        The abscissa.
+    y : numpy.ndarray
+        The probe profile.
+    sig_x : numpy.ndarray
+        The kernel width, in the units of ``x``.
+
+    Returns
+    -------
+    float
+        The realised kernel width, in pixels.
+    """
+    out = ppxf_util.varsmooth(x, y, sig_x)
+    return np.sqrt(max(second_moment(out) - second_moment(y), 0.0))
+
+
+def second_moment(profile):
+    """
+    Return the variance of a profile about its own centroid, in pixels squared.
+
+    Parameters
+    ----------
+    profile : numpy.ndarray
+        The profile.
+
+    Returns
+    -------
+    float
+        The variance.
+    """
+    mean = np.sum(profile * INDEX) / np.sum(profile)
+    return np.sum(profile * np.square(INDEX - mean)) / np.sum(profile)
+
+
 def main():
     """Run every case and print the diagnosis."""
     print(__doc__.strip().splitlines()[0])
@@ -165,6 +285,8 @@ def main():
 
     print('\n  Control: the scalar sig_x branch builds no stretched grid at all:')
     report('scalar sig_x = 0.5', x_exact, 0.5, 0.5)
+
+    compare_profiles(x_exact)
 
     print(
         '\n'
