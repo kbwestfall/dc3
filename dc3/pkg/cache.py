@@ -72,7 +72,7 @@ def git_repo():
     """
     Get a reference to the local repository, if possible.
 
-    `pygit2.Repository` performs upward discovery, so this succeeds for any path
+    :class:`pygit2.Repository` performs upward discovery, so this succeeds for any path
     inside the working tree, not only its root.  That is what makes
     :func:`git_branch` work under ``tox``, where the package is installed into a
     virtual environment beneath ``.tox/`` and is therefore still inside the
@@ -80,7 +80,7 @@ def git_repo():
 
     Returns
     -------
-    `pygit2.Repository`, None
+    :class:`pygit2.Repository`, None
         The repository object, or None if ``pygit2`` is unavailable, ``dc3`` is
         not installed from a git checkout, or the repository has no commits yet.
     """
@@ -185,7 +185,7 @@ def fetch_remote_file(
     """
     Use :mod:`astropy.utils.data` to fetch a file from the remote host or cache.
 
-    `astropy.utils.data.download_file` looks in the local cache before
+    :func:`astropy.utils.data.download_file` looks in the local cache before
     downloading from the remote server.  The remote file can be forcibly
     re-downloaded using ``force_update``.
 
@@ -197,7 +197,7 @@ def fetch_remote_file(
         The subdirectory of ``dc3/data/`` in which to find the file (e.g.,
         ``tests`` or ``templates``).
     force_update : bool, optional
-        Force `astropy.utils.data.download_file` to update the cache by
+        Force :func:`astropy.utils.data.download_file` to update the cache by
         downloading the latest version.
     full_url : str, optional
         The full URL.  If None, use :func:`_build_remote_url`.
@@ -208,7 +208,7 @@ def fetch_remote_file(
 
     Returns
     -------
-    `pathlib.Path`, None
+    :class:`pathlib.Path`, None
         The local path to the file in the cache, or None; see ``return_none``.
 
     Raises

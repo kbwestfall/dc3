@@ -252,6 +252,31 @@ the parent's field description, once by the child's `default_comment`. `config_l
 the parent description down as a fallback, so each section is described exactly once, by whichever
 is more specific.
 
+### `dc3/core/bitmask.py` — ✅ complete
+
+`BitMask` holds the definitions and operates on raw integer values; `BitMaskArray` pairs an array
+with its definition so flags read and write by name. 20 tests.
+
+Two departures from PypeIt:
+
+- **Bits are declared as a class-level mapping** of name to description, rather than passed to the
+  constructor as parallel lists that must be kept in register — the same change
+  `set_parameter_definition` makes for parameters.
+- **`BitMaskArray` is a plain array wrapper**, not a `DataContainer`. PypeIt's is one, which would
+  have coupled it to the still-open datamodel decision. Keeping it free of any I/O base class
+  leaves that decision open.
+
+**Retired bits.** The bit *value* is its position in the mapping, so removing a bit renumbers
+every later one and silently reinterprets every mask already written. PypeIt reserves positions
+with repeated `'NULL'` keys, which a dict cannot express; here a bit is retired by setting its
+description to `None`. It keeps its position, is excluded from `keys()`, and raises if used.
+
+**`validate_header` is new.** PypeIt's `from_header` reconstructs a `BitMask` from whatever the
+file recorded. Since `dc3`'s bits are class-declared, the useful operation is the opposite one:
+compare what the file says against the declaration and **refuse** on disagreement. A mask written
+under different definitions is still perfectly readable — it just means something else — so this
+is the one failure mode that cannot be allowed to pass quietly.
+
 ### The datamodel decision — ⬜ still open
 
 **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
@@ -293,6 +318,8 @@ is a one-off.
 | 1 | `mvdiff`/`miter` sign-encodings split into explicit parameters | The plan said only to expose the hardwired constants. Encoding units and a mode in a number's sign makes a configuration unreadable without knowing the convention. | ⬜ not yet |
 | 1 | `WAVE1`, `DISP`, `dispaxis` dropped | The plan lists the 15 C++ keys as the basis for `dc3par`. These three name header keywords for WCS parsing, which `specutils`/`astropy.wcs` do at the I/O boundary; keeping them would contradict the Phase 2 boundary/internals split. | ⬜ not yet |
 | 1 | `alambda` dropped | It is the damping parameter of the hand-rolled Levenberg–Marquardt being replaced; `scipy.optimize.least_squares` has no counterpart. `lam` survives as `fit.x_scale`, which is meaningful and is published. | ⬜ not yet |
+| 1 | `BitMaskArray` is not a `DataContainer` | PypeIt's is, which the plan notes couples its adoption to the datamodel decision. Keeping it a plain wrapper leaves that decision open. | ⬜ not yet |
+| 1 | `BitMask.validate_header` replaces `from_header` | Bits are class-declared here, so reconstructing a mask from a file is less useful than checking the file against the declaration and refusing on mismatch. | ⬜ not yet |
 
 ---
 
@@ -367,3 +394,11 @@ Tracks the fourteen verification items in the plan.
   `default_comment`. Added three formatting conventions to `CLAUDE.md` at the user's request —
   multi-line constructs put their contents on the following line with the closing bracket aligned
   with the opener.
+- **2026-09-17** — **`dc3/core/bitmask.py` complete** (110 tests in total). Recorded the two
+  departures from PypeIt — bits declared as a class-level mapping, and `BitMaskArray` as a plain
+  wrapper rather than a `DataContainer`, which keeps the datamodel decision open — plus the
+  retired-bit convention and the new `validate_header`, which refuses a file whose bit definitions
+  disagree with the class. Swept every docstring so that references to other packages carry an
+  explicit Sphinx role for intersphinx, and set the line length at 99, enforced by
+  `tox -e codestyle` via a `[pycodestyle]` section in `tox.ini`; the CI codestyle job now calls
+  tox rather than duplicating the command.

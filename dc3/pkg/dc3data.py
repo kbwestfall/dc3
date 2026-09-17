@@ -50,7 +50,7 @@ class DC3DataPath:
 
     Parameters
     ----------
-    subdirs : str, `pathlib.Path`
+    subdirs : str, :class:`pathlib.Path`
         The subdirectory within the main ``dc3/data`` directory that contains
         the data.
     remote_host : str, optional
@@ -65,9 +65,9 @@ class DC3DataPath:
         String representing the remote host.
     subdirs : str
         The subdirectory path within the ``dc3/data`` directory.
-    data : `pathlib.Path`
+    data : :class:`pathlib.Path`
         Path to the top-level data directory on the user's system.
-    path : `pathlib.Path`
+    path : :class:`pathlib.Path`
         Path to the specific data directory.
     """
 
@@ -115,14 +115,14 @@ class DC3DataPath:
 
         Parameters
         ----------
-        p : str, `pathlib.Path`
+        p : str, :class:`pathlib.Path`
             A subdirectory or file within :attr:`path`.
 
         Returns
         -------
-        DC3DataPath, `pathlib.Path`
+        DC3DataPath, :class:`pathlib.Path`
             A :class:`DC3DataPath` if ``p`` is a subdirectory, otherwise a
-            `pathlib.Path`.
+            :class:`pathlib.Path`.
 
         Raises
         ------
@@ -147,12 +147,12 @@ class DC3DataPath:
 
         Parameters
         ----------
-        path : `pathlib.Path`
+        path : :class:`pathlib.Path`
             The path to check.  This *must* be a directory, not a file.
 
         Returns
         -------
-        `pathlib.Path`
+        :class:`pathlib.Path`
             The input path, if it is valid.
 
         Raises
@@ -171,7 +171,7 @@ class DC3DataPath:
 
         Parameters
         ----------
-        f : `pathlib.Path`
+        f : :class:`pathlib.Path`
             File path to parse.
 
         Returns
@@ -190,7 +190,7 @@ class DC3DataPath:
 
         Parameters
         ----------
-        f : `pathlib.Path`
+        f : :class:`pathlib.Path`
             The file path to return.
         return_format : bool
             If True, parse and return the file suffix (e.g., ``'fits'``).
@@ -200,7 +200,7 @@ class DC3DataPath:
 
         Returns
         -------
-        `pathlib.Path`, tuple
+        :class:`pathlib.Path`, tuple
             The file path and, if requested, the file format.
         """
         if return_format:
@@ -223,12 +223,12 @@ class DC3DataPath:
 
         Parameters
         ----------
-        data_file : str, `pathlib.Path`
+        data_file : str, :class:`pathlib.Path`
             File name or path.  Must be a file, not a subdirectory within
             :attr:`path`.
         force_update : bool, optional
             If the file is in the cache, force
-            `astropy.utils.data.download_file` to update the cache by
+            :func:`astropy.utils.data.download_file` to update the cache by
             downloading the latest version.
         to_pkg : str, optional
             If the file is in the cache, this affects how the cached file is
@@ -247,7 +247,7 @@ class DC3DataPath:
 
         Returns
         -------
-        `pathlib.Path`, tuple, None
+        :class:`pathlib.Path`, tuple, None
             The file path and, if requested, the file format.
         """
         # Make sure the file is a Path object

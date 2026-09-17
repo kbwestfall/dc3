@@ -1,7 +1,7 @@
 """
 The base class used to hold runtime parameters.
 
-:class:`~dc3.par.parset.ParSet` is a thin layer over `pydantic.BaseModel` that
+:class:`~dc3.par.parset.ParSet` is a thin layer over :class:`pydantic.BaseModel` that
 adds the four capabilities ``dc3`` needs and pydantic does not provide:
 reStructuredText table generation, a FITS header round-trip, a layered
 default/file/command-line merge, and TOML configuration output that preserves
@@ -59,7 +59,7 @@ def _field_options(annotation):
     """
     Return the allowed values for a field, or None.
 
-    Options are declared using `typing.Literal`; this recovers them for
+    Options are declared using :obj:`typing.Literal`; this recovers them for
     documentation.  Unions of Literals are flattened.
 
     Parameters
@@ -97,7 +97,7 @@ def _type_name(annotation):
     Returns
     -------
     str
-        A comma-separated list of type names.  A `typing.Literal` is reported
+        A comma-separated list of type names.  A :obj:`typing.Literal` is reported
         as the type of its members, since that is what a user must supply.
     """
     if annotation is None or annotation is type(None):
@@ -469,7 +469,7 @@ class ParSet(BaseModel):
 
         Parameters
         ----------
-        cfg_file : str, `pathlib.Path`, optional
+        cfg_file : str, :class:`pathlib.Path`, optional
             File to write.  If None, the lines are returned without writing.
         section_name : str, optional
             Name of the top-level section.  If None, use :attr:`default_key`.
@@ -500,7 +500,7 @@ class ParSet(BaseModel):
 
         Parameters
         ----------
-        cfg_file : str, `pathlib.Path`
+        cfg_file : str, :class:`pathlib.Path`
             The file to read.
         section_name : str, optional
             The top-level section to read.  If None, use :attr:`default_key`;
@@ -582,18 +582,18 @@ class ParSet(BaseModel):
         ``repr`` so that reading the header back is a parse rather than an
         ``eval``, and so that the types survive the round trip exactly.
 
-        Long values use the FITS long-string convention, which `astropy.io.fits`
+        Long values use the FITS long-string convention, which :mod:`astropy.io.fits`
         applies automatically.
 
         Parameters
         ----------
-        hdr : `astropy.io.fits.Header`, optional
+        hdr : :class:`astropy.io.fits.Header`, optional
             Header to add the parameter set to.  If None, a new header is
             created.
 
         Returns
         -------
-        `astropy.io.fits.Header`
+        :class:`astropy.io.fits.Header`
             The header including the parameter set.
         """
         if hdr is None:
@@ -609,7 +609,7 @@ class ParSet(BaseModel):
 
         Parameters
         ----------
-        hdr : `astropy.io.fits.Header`
+        hdr : :class:`astropy.io.fits.Header`
             The header to read.
 
         Returns

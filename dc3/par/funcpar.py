@@ -48,9 +48,9 @@ Types come from the wrapped function's annotations, and in practice there
 usually are none.  Measured over the functions ``dc3`` wraps (see
 ``prototypes/annotation_survey.py``), only 17% of their keyword arguments are
 annotated: ``ppxf`` 0 of 5, ``scipy`` 0 of 44, ``numpy`` 0 of 6, with only
-`astropy.stats.sigma_clip` fully annotated.
+:func:`astropy.stats.sigma_clip` fully annotated.
 
-An unannotated parameter is typed `typing.Any`, which means **no validation at
+An unannotated parameter is typed :obj:`typing.Any`, which means **no validation at
 all**.  What :class:`FuncPar` still buys is worth being clear about:
 
 - the keyword list and defaults, tracked automatically against upstream, so they
@@ -83,7 +83,7 @@ __all__ = ['FuncPar']
 
 def _unwrap(func):
     """
-    Return the underlying function, unwrapping a `staticmethod` if present.
+    Return the underlying function, unwrapping a :class:`staticmethod` if present.
 
     Parameters
     ----------
@@ -171,7 +171,7 @@ def _type_hints(func):
     """
     Resolve the type hints for the keyword arguments of a function.
 
-    Uses `typing.get_type_hints` rather than reading
+    Uses :func:`typing.get_type_hints` rather than reading
     `inspect.Parameter.annotation` directly, so that postponed annotations
     (strings, as produced when a module uses ``from __future__ import
     annotations``) are evaluated back into real type objects.
@@ -209,7 +209,7 @@ def _annotation(hint):
     Returns
     -------
     object
-        The annotation to declare.  `typing.Any` is returned whenever the hint
+        The annotation to declare.  :obj:`typing.Any` is returned whenever the hint
         is absent or cannot be cleanly translated, which disables validation for
         that parameter.
     """
@@ -341,7 +341,7 @@ class FuncPar(ParSet, metaclass=FuncParMeta):
     func: ClassVar = None
     """
     The callable whose keyword arguments are collected.  Stored as a
-    `staticmethod` so that it is not bound to the instance.
+    :class:`staticmethod` so that it is not bound to the instance.
     """
 
     kw_subset: ClassVar[list | None] = None
