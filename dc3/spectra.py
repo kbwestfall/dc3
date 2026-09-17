@@ -28,12 +28,25 @@ Quantity       Convention
 ``wave``       Vacuum wavelength in Angstroms, pixel centres
 ``flux``       Arbitrary, but consistent across a set
 ``ivar``       Inverse variance of ``flux``, in the inverse square of its units
-``sres``       Instrumental dispersion :math:`\sigma` in km/s
+``idsp``       Instrumental dispersion :math:`\sigma` in km/s
 =============  =====================================================================
+
+.. important::
+
+    ``idsp`` is an instrumental **dispersion** in km/s, not a resolving power.
+    It is named ``idsp`` rather than ``sres`` deliberately: in ``mangadap``,
+    ``sres`` always means :math:`R = \lambda/{\rm FWHM}_\lambda`, and reusing
+    that name for a dispersion would invite exactly the confusion the naming is
+    meant to avoid.
+
+    **Converting a resolving power to a dispersion is part of ingestion.**  A
+    user who has :math:`R` supplies it to the ingest function, which converts it
+    with :func:`~dc3.core.resolution.dispersion_from_resolving_power`; nothing
+    inside ``dc3`` ever sees :math:`R`.
 
 .. warning::
 
-    ``sres`` is the **pre-pixelized** instrumental dispersion: the line-spread
+    ``idsp`` is the **pre-pixelized** instrumental dispersion: the line-spread
     function *before* integration over the spectral channel.  This cannot be
     checked, so it is an input contract.  Supplying a post-pixelized dispersion
     biases every astrophysical dispersion the code reports.  For MaNGA-style
@@ -78,7 +91,7 @@ class SpectrumBitMask(BitMask):
         'NOIVAR': 'Pixel has no usable inverse variance',
         'USER': 'Pixel masked on input by the user',
         'REGION': 'Pixel falls in a masked spectral region',
-        'NOSRES': 'Pixel has no usable instrumental dispersion',
+        'NOIDSP': 'Pixel has no usable instrumental dispersion',
         'UNMATCHED': 'Template resolution could not be matched at this pixel',
     }
 
@@ -111,7 +124,7 @@ class Spectra:
     mask : :class:`numpy.ndarray`, :class:`SpectrumMask`, optional
         Per-pixel mask.  A boolean array is read as "True means masked" and
         recorded as the ``USER`` bit.  If None, a zeroed mask is created.
-    sres : :class:`numpy.ndarray`, optional
+    idsp : :class:`numpy.ndarray`, optional
         Pre-pixelized instrumental dispersion in km/s, either per spectrum with
         the same shape as ``flux``, or one vector of length ``npix`` shared by
         all of them.
@@ -126,7 +139,7 @@ class Spectra:
         Inverse variance, shape ``(nspec, npix)``.
     mask : :class:`SpectrumMask`
         Per-pixel mask, shape ``(nspec, npix)``.
-    sres : :class:`numpy.ndarray`, None
+    idsp : :class:`numpy.ndarray`, None
         Instrumental dispersion in km/s, shape ``(nspec, npix)``.
     cont : :class:`numpy.ndarray`, None
         Continuum, shape ``(nspec, npix)``.
@@ -140,7 +153,7 @@ class Spectra:
         Number of pixels in each spectrum.
     """
 
-    def __init__(self, flux, log10lam0, dloglam, ivar=None, mask=None, sres=None, cont=None):
+    def __init__(self, flux, log10lam0, dloglam, ivar=None, mask=None, idsp=None, cont=None):
         self.flux = self._as_2d(flux, 'flux')
         self.nspec, self.npix = self.flux.shape
         if dloglam <= 0:
@@ -150,7 +163,7 @@ class Spectra:
 
         self.ivar = None if ivar is None else self._as_2d(ivar, 'ivar', match=True)
         self.cont = None if cont is None else self._as_2d(cont, 'cont', match=True)
-        self.sres = None if sres is None else self._broadcast_sres(sres)
+        self.idsp = None if idsp is None else self._broadcast_idsp(idsp)
         self.mask = self._ingest_mask(mask)
 
         self._flag_invalid()
@@ -190,13 +203,13 @@ class Spectra:
             )
         return _array
 
-    def _broadcast_sres(self, sres):
+    def _broadcast_idsp(self, idsp):
         """
         Coerce the instrumental dispersion, allowing one vector for all spectra.
 
         Parameters
         ----------
-        sres : array-like
+        idsp : array-like
             Instrumental dispersion, of shape ``(npix,)`` or matching
             :attr:`flux`.
 
@@ -210,15 +223,15 @@ class Spectra:
         DC3Error
             Raised if the shape is neither of the two allowed.
         """
-        _sres = np.asarray(sres, dtype=float)
-        if _sres.ndim == 1 and _sres.size == self.npix:
-            return np.ascontiguousarray(np.tile(_sres, (self.nspec, 1)))
-        _sres = self._as_2d(_sres, 'sres')
-        if _sres.shape != self.flux.shape:
+        _idsp = np.asarray(idsp, dtype=float)
+        if _idsp.ndim == 1 and _idsp.size == self.npix:
+            return np.ascontiguousarray(np.tile(_idsp, (self.nspec, 1)))
+        _idsp = self._as_2d(_idsp, 'idsp')
+        if _idsp.shape != self.flux.shape:
             raise DC3Error(
-                f'sres has shape {_sres.shape}; expected {self.flux.shape} or ({self.npix},).'
+                f'idsp has shape {_idsp.shape}; expected {self.flux.shape} or ({self.npix},).'
             )
-        return _sres
+        return _idsp
 
     def _ingest_mask(self, mask):
         """
@@ -272,9 +285,9 @@ class Spectra:
         if self.ivar is not None:
             bad = np.logical_or(np.logical_not(np.isfinite(self.ivar)), self.ivar <= 0)
             self.mask.turn_on('NOIVAR', select=bad)
-        if self.sres is not None:
-            bad = np.logical_or(np.logical_not(np.isfinite(self.sres)), self.sres <= 0)
-            self.mask.turn_on('NOSRES', select=bad)
+        if self.idsp is not None:
+            bad = np.logical_or(np.logical_not(np.isfinite(self.idsp)), self.idsp <= 0)
+            self.mask.turn_on('NOIDSP', select=bad)
 
     # ------------------------------------------------------------------
     # Alternative constructors
@@ -445,7 +458,7 @@ class Spectra:
             self.flux.copy(), self.log10lam0, self.dloglam,
             ivar=None if self.ivar is None else self.ivar.copy(),
             mask=SpectrumMask(self.mask.mask.copy()),
-            sres=None if self.sres is None else self.sres.copy(),
+            idsp=None if self.idsp is None else self.idsp.copy(),
             cont=None if self.cont is None else self.cont.copy(),
         )
 
@@ -468,6 +481,6 @@ class Spectra:
             self.flux[select], self.log10lam0, self.dloglam,
             ivar=None if self.ivar is None else self.ivar[select],
             mask=SpectrumMask(np.atleast_2d(self.mask.mask[select]).copy()),
-            sres=None if self.sres is None else self.sres[select],
+            idsp=None if self.idsp is None else self.idsp[select],
             cont=None if self.cont is None else self.cont[select],
         )

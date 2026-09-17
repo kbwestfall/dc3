@@ -15,14 +15,14 @@ DLOGLAM = 1e-4
 NPIX = 50
 
 
-def make_spectra(nspec=3, npix=NPIX, with_ivar=True, with_sres=True):
+def make_spectra(nspec=3, npix=NPIX, with_ivar=True, with_idsp=True):
     """Build a simple, entirely valid spectrum set for the tests."""
     rng = np.random.default_rng(42)
     flux = 1.0 + 0.1 * rng.standard_normal((nspec, npix))
     return Spectra(
         flux, LOG10LAM0, DLOGLAM,
         ivar=np.full((nspec, npix), 100.0) if with_ivar else None,
-        sres=np.full(npix, 30.0) if with_sres else None,
+        idsp=np.full(npix, 30.0) if with_idsp else None,
     )
 
 
@@ -48,12 +48,12 @@ def test_single_spectrum_is_promoted_to_two_dimensions():
     assert spec.nspec == 1, 'A single spectrum should report nspec of one'
 
 
-def test_sres_may_be_shared_across_spectra():
+def test_idsp_may_be_shared_across_spectra():
     """One instrumental-dispersion vector can serve every spectrum."""
     spec = make_spectra(nspec=4)
-    assert spec.sres.shape == (4, NPIX), \
-        'A shared sres vector was not broadcast to every spectrum'
-    assert np.all(spec.sres == 30.0), 'Broadcasting the sres vector changed its values'
+    assert spec.idsp.shape == (4, NPIX), \
+        'A shared idsp vector was not broadcast to every spectrum'
+    assert np.all(spec.idsp == 30.0), 'Broadcasting the idsp vector changed its values'
 
 
 def test_from_wave():
@@ -75,7 +75,7 @@ def test_from_wave_rejects_a_length_mismatch():
     [
         ({'ivar': np.ones((2, NPIX))}, 'ivar has shape'),
         ({'cont': np.ones((2, NPIX))}, 'cont has shape'),
-        ({'sres': np.ones((2, NPIX))}, 'sres has shape'),
+        ({'idsp': np.ones((2, NPIX))}, 'idsp has shape'),
         ({'mask': np.zeros((2, NPIX), dtype=bool)}, 'mask has shape'),
     ]
 )
@@ -105,13 +105,13 @@ def test_invalid_values_are_flagged_regardless_of_the_input_mask():
     flux[0, 0] = np.nan
     ivar = np.full((1, 5), 100.0)
     ivar[0, 1] = 0.0
-    sres = np.full((1, 5), 30.0)
-    sres[0, 2] = -1.0
+    idsp = np.full((1, 5), 30.0)
+    idsp[0, 2] = -1.0
 
-    spec = Spectra(flux, LOG10LAM0, DLOGLAM, ivar=ivar, sres=sres)
+    spec = Spectra(flux, LOG10LAM0, DLOGLAM, ivar=ivar, idsp=idsp)
     assert spec.mask.INVALID[0, 0], 'A non-finite flux was not flagged'
     assert spec.mask.NOIVAR[0, 1], 'A zero inverse variance was not flagged'
-    assert spec.mask.NOSRES[0, 2], 'A negative instrumental dispersion was not flagged'
+    assert spec.mask.NOIDSP[0, 2], 'A negative instrumental dispersion was not flagged'
     assert np.array_equal(spec.gpm[0], [False, False, False, True, True]), \
         'The good-pixel mask does not exclude exactly the unusable pixels'
 

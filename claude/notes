@@ -446,3 +446,7 @@ developers, but does not require a redetermination of the limit on every import.
 ### 8.4
 
 I like your suggestion of a constraints table.  The table should be ascii so that is directly human readable and writable.  I prefer fixed-width columnated format to ecsv, but ecsv is preferred over FITS.
+
+Two general things:
+    - I develop on a mac.
+    - imports at the top

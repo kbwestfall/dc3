@@ -127,7 +127,7 @@ class ExampleTemplatePar(ParSet):
         default=0.1, ge=0.1,
         description='Target for the minimum dispersion of the preparation kernel, in pixels.'
     )]
-    mask_unmatched_sres: Annotated[bool, Field(
+    mask_unmatched_idsp: Annotated[bool, Field(
         default=False,
         description='Mask template regions that cannot reach the target resolution.'
     )]
@@ -349,7 +349,7 @@ def test_toml_is_parseable_and_commented():
         'Emitted TOML does not contain exactly the declared top-level parameters'
     assert doc['dc3']['template']['velscale_ratio'] == 1, \
         'Nested parameter did not survive emission as a dotted TOML subsection'
-    assert doc['dc3']['template']['mask_unmatched_sres'] is False, \
+    assert doc['dc3']['template']['mask_unmatched_idsp'] is False, \
         'Boolean was not emitted as a TOML literal; it parsed back as another type'
     assert 'prepared-template pixels' in content, \
         'Parameter description was not emitted as a comment'
@@ -464,7 +464,7 @@ def test_from_layers_precedence():
     )
     assert p.velscale_ratio == 8, 'Command-line value did not take precedence over the file'
     assert p.epsilon_sigma == 0.5, 'File value was not retained where the command line was silent'
-    assert p.mask_unmatched_sres is False, \
+    assert p.mask_unmatched_idsp is False, \
         'Default was not retained where neither layer supplied a value'
 
 
@@ -534,7 +534,7 @@ def test_rst_table_reports_literal_options():
 def test_introspection():
     """keys(), nested() and field_default() report the declaration."""
     assert ExampleTemplatePar.keys() == [
-        'velscale_ratio', 'epsilon_sigma', 'mask_unmatched_sres'
+        'velscale_ratio', 'epsilon_sigma', 'mask_unmatched_idsp'
     ], 'keys() did not report the declared parameters in declaration order'
     assert ExampleDC3Par.nested() == ['template', 'fit'], \
         'nested() did not identify exactly the parameters that are themselves parameter sets'

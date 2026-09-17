@@ -86,7 +86,7 @@ class TemplatePar(ParSet):
                     'LOWER resolution than the galaxy.  This sets the most negative dvar_inst, '
                     'and hence the floor it imposes on the measurable astrophysical dispersion.'
     )]
-    mask_unmatched_sres: Annotated[bool, Field(
+    mask_unmatched_idsp: Annotated[bool, Field(
         default=False,
         description='Mask template regions that cannot be brought to the target resolution.  '
                     'If False, such regions are retained and the resolution mismatch is '

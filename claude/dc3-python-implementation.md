@@ -482,10 +482,59 @@ boundary and not touched again inside the fit. 23 tests.
   says.
 - `SpectrumBitMask` declares seven bits, including `UNMATCHED` for the resolution work to come.
 
+### `dc3/core/resolution.py` — ✅ complete
+
+The `dvar_inst` machinery. 32 tests, including one ported from
+`mangadap/tests/test_resolution_matching.py`.
+
+**Seven simplifications against `mangadap`'s `SpectralResolution`**, each specific to `dc3`:
+
+| `mangadap` | Here | Why it drops out |
+|---|---|---|
+| Stores `R`, converts to σ at every step | σ in km/s throughout | The conversion happens once, at ingest |
+| Three coordinate systems (Å², (km/s)², px²) with a linear/log branch in each | One, plus a scalar division | `dc3` is always logarithmically sampled |
+| Mutates four attributes; calls must be ordered | Returns `ResolutionMatch` | — |
+| Signed σ encoded as `σ²/√|σ²|` | Signed *variance* | The square root is taken once, where the kernel is known real |
+| `fudge = 1.01` so the extremal pixel is not masked | none | The minimum kernel is *constructed* to equal `epsilon_sigma` exactly |
+| `no_offset` selects one of two of three options | One two-sided target | `epsilon_sigma`/`sigma_floor` is a superset |
+| Carries its own banded-matrix convolution | Wraps `varsmooth` | `mangadap`'s is retained only as a cross-check |
+
+The sixth is substantive rather than cosmetic: `mangadap`'s offset is `min(0, ...)`, so a
+*positive* pedestal — the regime that holds the fitted dispersion away from zero — is unreachable.
+
+**Naming.** `Spectra.sres` was renamed **`idsp`** at the user's request: `sres` means `R` in
+`mangadap`, so reusing it for a dispersion invites the confusion the naming is meant to prevent.
+`TemplatePar.mask_unmatched_sres` became `mask_unmatched_idsp` for consistency. Converting a
+supplied `R` to a dispersion is documented as part of ingestion, via
+`dispersion_from_resolving_power`.
+
+**A correction to the plan, from measurement.** The plan states that `varsmooth`'s
+`sig.clip(0.1)` "silently rais[es] any smaller kernel to 0.1 px". **It does not.** Measured against
+a resolved Gaussian:
+
+| Requested | Realised |
+|---|---|
+| ≥ 0.1 px | exactly the request |
+| < 0.1 px (any value) | **≈ 0.71 px** — about seven times the clip |
+
+With the stretch degenerate, `σ_max/σ = 1` everywhere and the Gaussian factor in the transform
+becomes ≈ 1, so what survives is the interpolation round-trip rather than the intended
+convolution. The consequence for the port is unchanged in *direction* but much larger in *size*: a
+sub-clip `epsilon_sigma` would broaden the template by ~0.71 px while the bookkeeping recorded the
+request, so `dvar_inst` would be wrong by that whole difference. Rejecting such a value, which the
+plan already required, is therefore more important than it appeared. Both regimes are pinned by
+parametrized tests.
+
+**The ported test needed one adaptation.** `mangadap` convolves away the entire resolution
+difference, so its expectation is the spectrum at the target resolution. Here only the
+*wavelength-dependent* part is convolved and the constant part is carried as `dvar_inst`, so the
+prepared spectrum sits at `σ_prep² = σ_to² − dvar_inst`. That identity — which everything
+downstream depends on — is now tested both end to end against an analytic spectrum and directly on
+the kernel.
+
 ### Remaining — ⬜ not started
 
-`dc3/core/resolution.py` (the `dvar_inst` machinery), `dc3/core/deredshift.py`, and
-`dc3/templates.py`.
+`dc3/core/deredshift.py` and `dc3/templates.py`.
 
 ---
 
@@ -635,3 +684,23 @@ Tracks the fourteen verification items in the plan.
   whether `Spectra` should hold inverse variance or 1-sigma errors; and that a pre-processing
   utility is needed for linearly sampled spectra, preceded by a comparison of the `specutils` and
   `mangadap` resampling implementations.
+- **2026-09-17** — **`dc3/core/resolution.py` complete** (275 tests in total). Recorded the seven
+  ways the design simplifies `mangadap`'s `SpectralResolution`, of which one is substantive rather
+  than cosmetic: `mangadap`'s offset is `min(0, ...)`, making a positive pedestal unreachable.
+  Renamed `Spectra.sres` to `idsp` and `TemplatePar.mask_unmatched_sres` to
+  `mask_unmatched_idsp`, at the user's request, since `sres` means `R` in `mangadap`; documented
+  the `R`-to-dispersion conversion as part of ingestion. Ported the end-to-end matching test from
+  `mangadap/tests/test_resolution_matching.py`, which needed one adaptation because `dc3` carries
+  the constant part of the difference as `dvar_inst` rather than convolving it away.
+
+  **Corrected a factual claim in the plan by measurement.** The plan says `varsmooth`'s
+  `sig.clip(0.1)` silently raises a smaller kernel to 0.1 px; measurement shows any request below
+  0.1 px instead yields a realised kernel of ≈ 0.71 px, roughly seven times the clip. The
+  direction of the consequence is unchanged but its size is much larger, which strengthens the
+  case for rejecting a sub-clip `epsilon_sigma`. The plan is left as written; this record carries
+  the correction.
+
+  Also found and fixed two defects in the tests themselves while getting them to pass: a
+  wavelength grid so coarse (69 km/s per pixel) that the dispersions under test were sub-pixel and
+  unphysical, and an emission-line comb built with a single dispersion where the dispersion varied
+  across the range.
