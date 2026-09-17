@@ -71,6 +71,10 @@ These are easy to violate accidentally and expensive to unpick.
 - **Lines are at most 99 characters.** Enforced by `tox -e codestyle`, which
   configures `pycodestyle` from `tox.ini` to check `E9` (syntax/runtime errors)
   and `E501` (line length) and nothing else.
+- **No nested function definitions.** A helper belongs at module level, private
+  by a leading underscore if it is not part of the interface. The exception is
+  test code, where a closure over the fixture under test is often the clearest
+  way to express a check.
 - **Imports go at the top of the file.** The one exception is a script: the
   imports a `ScriptBase` subclass needs belong inside its `main`, because every
   registered entry point is imported when the console scripts are resolved, so
