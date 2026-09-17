@@ -442,9 +442,62 @@ class Spectra:
                 snr[i] = np.median(ratio[i][gpm[i]])
         return snr
 
+    def fiducial_resolution(self, method='median'):
+        """
+        Reduce the set to the single instrumental resolution templates match to.
+
+        Template preparation happens once per run, so it needs one resolution to
+        work against.  Unless every spectrum in the set has the same resolution
+        -- they will not -- this matches none of them exactly, and the residual
+        is what the fitted instrumental offset exists to detect.
+
+        Parameters
+        ----------
+        method : str, optional
+            How to combine the set at each wavelength.  ``'median'`` minimises
+            the typical residual; ``'max'`` takes the lowest resolution present;
+            ``'min'`` takes the highest.
+
+        Returns
+        -------
+        :class:`numpy.ndarray`
+            The fiducial instrumental dispersion in km/s, one value per pixel.
+
+        Raises
+        ------
+        DC3Error
+            Raised if the set carries no instrumental dispersion, or the method
+            is not recognized.
+        """
+        if self.idsp is None:
+            raise DC3Error('These spectra carry no instrumental dispersion to combine.')
+        if method == 'median':
+            return np.median(self.idsp, axis=0)
+        if method == 'max':
+            return np.amax(self.idsp, axis=0)
+        if method == 'min':
+            return np.amin(self.idsp, axis=0)
+        raise DC3Error(f"Unrecognized method {method!r}; expected 'median', 'max' or 'min'.")
+
     # ------------------------------------------------------------------
     # Manipulation
     # ------------------------------------------------------------------
+    def _derived_kwargs(self):
+        """
+        Return the extra constructor arguments a derived set must carry over.
+
+        :func:`copy` and :func:`__getitem__` build their result with
+        ``type(self)``, so a subclass that adds state to its constructor would
+        otherwise lose that state whenever a set is copied or sliced.
+        Overriding this is all such a subclass needs to do.
+
+        Returns
+        -------
+        dict
+            Keyword arguments, empty for :class:`Spectra` itself.
+        """
+        return {}
+
     def copy(self):
         """
         Return an independent copy.
@@ -460,6 +513,7 @@ class Spectra:
             mask=SpectrumMask(self.mask.mask.copy()),
             idsp=None if self.idsp is None else self.idsp.copy(),
             cont=None if self.cont is None else self.cont.copy(),
+            **self._derived_kwargs(),
         )
 
     def __getitem__(self, index):
@@ -483,4 +537,5 @@ class Spectra:
             mask=SpectrumMask(np.atleast_2d(self.mask.mask[select]).copy()),
             idsp=None if self.idsp is None else self.idsp[select],
             cont=None if self.cont is None else self.cont[select],
+            **self._derived_kwargs(),
         )

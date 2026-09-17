@@ -185,6 +185,35 @@ def test_snr():
         'The signal-to-noise ratio should be the flux times the root inverse variance'
 
 
+def test_fiducial_resolution():
+    """
+    The set reduces to one resolution, by the requested rule.
+
+    Template preparation runs once per run and so needs a single resolution to
+    match against; unless every spectrum has the same one, it matches none of
+    them exactly.
+    """
+    idsp = np.vstack([
+        np.full(NPIX, 30.0), np.full(NPIX, 40.0), np.full(NPIX, 50.0)
+    ])
+    spec = Spectra(np.ones((3, NPIX)), LOG10LAM0, DLOGLAM, idsp=idsp)
+
+    assert np.allclose(spec.fiducial_resolution(), 40.0), \
+        'The median fiducial should be the middle resolution'
+    assert np.allclose(spec.fiducial_resolution(method='max'), 50.0), \
+        'The max fiducial should be the lowest resolution present'
+    assert np.allclose(spec.fiducial_resolution(method='min'), 30.0), \
+        'The min fiducial should be the highest resolution present'
+
+
+def test_fiducial_resolution_rejects_bad_input():
+    """A set with no dispersion, or an unknown rule, is reported."""
+    with pytest.raises(DC3Error, match='no instrumental dispersion'):
+        make_spectra(with_idsp=False).fiducial_resolution()
+    with pytest.raises(DC3Error, match='Unrecognized method'):
+        make_spectra().fiducial_resolution(method='mean')
+
+
 def test_snr_without_errors_is_zero():
     """A set with no inverse variance has no signal-to-noise ratio to report."""
     spec = make_spectra(with_ivar=False)

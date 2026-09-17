@@ -561,9 +561,45 @@ logarithmic grid. The test composes a redshift *multiplicatively* — as redshif
 Applying one would move the spectra to wavelengths wrong by the ratio of the two samplings, and
 nothing downstream could detect it.
 
+### `dc3/templates.py` — 🔵 preparation pipeline complete; file I/O deferred
+
+The two-step pipeline, with `dvar_inst` carried out as a first-class result. 24 tests.
+
+**Scope, agreed with the user.** Reading raw library files from disk is *not* implemented. The
+plan puts file I/O at the `specutils` boundary, which is not written, so a reader built now would
+be designed against an interface that does not exist and likely rewritten when it does. Also
+deferred: the library-definition config, air→vacuum on ingest, and the on-disk cache of the
+prepared product — the last because the datamodel decision is still open and governs how `dc3`
+writes FITS.
+
+**Both classes subclass `Spectra`**, at the user's suggestion, rather than wrapping one. A
+`TemplateLibrary` *is* a set of spectra with a name and stricter validation; `PreparedTemplates`
+*is* a set of spectra that knows how it was made. This removes a layer of indirection that Phase 3
+and 4 would pay on every access — `prepared.flux`, not `prepared.spectra.flux`.
+
+That required one addition to `Spectra`: `copy()` and `__getitem__` build their result with
+`type(self)(...)`, so a subclass adding constructor state would silently lose it on a copy or a
+slice. A `_derived_kwargs()` hook, empty on the base class, is all a subclass needs to override.
+This matters concretely — the offset is a property of the *preparation*, not of any one template,
+so it must survive the multi-template path discarding templates of zero weight.
+
+`fiducial_resolution` also moved onto `Spectra`, at the user's suggestion: reducing a set to one
+representative resolution is a property of the set, not of the template machinery.
+
+**The central identity is tested directly:** the prepared resolution equals
+`sqrt(fiducial² − dvar_inst)` at every wavelength the galaxy constrains. Everything downstream
+converts a fitted dispersion using exactly that offset, so if the prepared resolution were
+anything else, every reported dispersion would be wrong.
+
+**Two judgement calls worth flagging.** The fiducial defaults to the **median** across the set,
+with `max`/`min` available; it is not yet a parameter, and may want to become one. And where
+templates extend beyond the galaxy's wavelength range — which is normal — the fiducial is held at
+its nearest measured value rather than extrapolated, since a linear extrapolation of a resolution
+curve can go negative. A warning says so, because the matching there rests on an assumption.
+
 ### Remaining — ⬜ not started
 
-`dc3/templates.py`.
+Library file I/O, at the `specutils` boundary.
 
 ---
 
@@ -791,3 +827,16 @@ Tracks the fourteen verification items in the plan.
   named one. Now uses `anchor`, which is identical to `root` on POSIX. The reasoning is pinned
   with `PureWindowsPath`/`PurePosixPath` so it is verified on any platform rather than only where
   it bites. **This one is inherited from PypeIt**, whose `scriptbase.py` has the same `p.root`.
+- **2026-09-17** — **`dc3/templates.py` preparation pipeline complete** (328 tests in total),
+  with file I/O deferred to the `specutils` boundary by agreement. Both `TemplateLibrary` and
+  `PreparedTemplates` **subclass `Spectra`** at the user's suggestion rather than wrapping one,
+  which removes a layer of indirection Phase 3 and 4 would otherwise pay on every access. That
+  needed a `_derived_kwargs()` hook on `Spectra`, since `copy()` and `__getitem__` build with
+  `type(self)` and would otherwise drop a subclass's extra state — concretely, the instrumental
+  offset would be lost whenever the multi-template path discards templates of zero weight.
+  `fiducial_resolution` moved onto `Spectra` for the same reason: it is a property of a spectrum
+  set, not of the template machinery. Corrected a claim in the module note about `mangadap` after
+  the user challenged it: its `TemplateLibrary` is bound to *a* datacube, not specifically a MaNGA
+  one, and the redshift its resolution matching returns is one that was passed *in* as a velocity
+  offset — the code itself carries a `TODO` saying it should be an input. `dc3` needs no such
+  offset because the galaxy is de-redshifted before preparation runs.

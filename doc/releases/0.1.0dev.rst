@@ -86,5 +86,12 @@ Functionality/Performance Improvements and Additions
   relabelling of the wavelength axis, so no flux is redistributed and no pixels
   are lost.
 
+- Added ``dc3.templates``, providing ``TemplateLibrary`` and the two-step
+  pipeline that prepares a library for fitting: resolution matching to a
+  fiducial galaxy resolution, then resampling at an integer ``velscale_ratio``.
+  The result carries the instrumental offset ``dvar_inst`` and a cache key
+  covering everything that changes it.  Reading library files from disk is not
+  yet implemented.
+
 - Added ``DC3CodingError``, raised for a fault in ``dc3`` itself rather than in
   how it is used.
