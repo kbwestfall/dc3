@@ -4,7 +4,8 @@
 what was verified, and — most importantly — **where the implementation departed from the plan and
 why**. The plan says what should happen; this says what did.
 
-**Status:** Phase 0 complete. Phase 1 not yet started.
+**Status:** Phase 0 complete. Phase 1 in progress — `dc3/pkg/` built and installed;
+`dc3/par/` not yet started.
 
 ---
 
@@ -78,16 +79,58 @@ is stated in full in the plan; this is the checklist.
 
 **Deliverable 1: the survey.** ✅ Complete — `dc3-original-implementation.md`, 2,180 lines.
 
-**Deliverable 2: repository scaffold.** ⬜ Not started.
+**Deliverable 2: repository scaffold.** ✅ Complete — commit `94aeb32`.
+
+`git init` on `main`, plus:
+
+| File | Notes |
+|---|---|
+| `LICENSE.rst` | Clean BSD-3 boilerplate, no commentary |
+| `licenses/README.rst` | The commentary: what is *adapted* (PypeIt, `mangadap` — both BSD-3, shippable) vs. *depended on* (`ppxf` — proprietary, never vendorable), with the exact ppxf license text and the two rules it imposes |
+| `licenses/{PYPEIT_LICENSE.rst,MANGADAP_LICENSE.md}` | Verbatim copies |
+| `pyproject.toml` | Python ≥ 3.12; `specutils` and `ppxf ≥ 9.5.0` hard dependencies; `[project.scripts]` deliberately empty, filled in as each script is written |
+| `MANIFEST.in` | Fixture exclusion **by file type**, so README and provenance still ship |
+| `tox.ini` | Adds `ppxfmin`/`ppxfdev` axes, since two ppxf functions are on the critical path |
+| `.github/workflows/ci_tests.yml` | `validate` gate job (protected branch or labelled PR) that every other job depends on, per PypeIt |
+| `doc/releases/0.1.0dev.rst` | Changelog lives here, per PypeIt; **no root `CHANGES.rst`** |
+| `README.rst`, `CITATION.cff`, `CLAUDE.md`, `.gitignore`, `readthedocs.yml` | |
+
+**Environment.** `$ENVS_HOME/dc3` (Python 3.13), `pip install -e ".[dev]"`. Installed clean and
+pulled **ppxf 9.5.0**, so the plan's floor is met by the current release rather than being
+aspirational. Note the venv must live in `$ENVS_HOME`, never in the repository — an in-tree
+environment named `dc3` would collide with the `dc3/` package directory.
 
 ---
 
 ## Phase 1 — Package infrastructure
 
-⬜ **Not started.**
+🔵 **In progress.**
 
-Two structural decisions are deliberately left open for the implementation to settle, both by
-prototyping rather than by argument:
+### `dc3/pkg/` — ✅ complete (commit `94aeb32`)
+
+Adapted from PypeIt, and verified working from an editable install: the package imports, both
+data paths resolve, the logger emits, and the cache builds correct remote URLs.
+
+| Module | Notes |
+|---|---|
+| `exceptions.py` | `DC3Error` and five subclasses. Added `DC3ParameterError` and `DC3ResolutionError` beyond PypeIt's set — the latter for the two resolution cases that must never pass silently: a kernel requiring deconvolution, and a kernel below the `varsmooth` floor |
+| `logger.py` | Drops PypeIt's `STEP` level (a Dashboard feature with no counterpart) and its numpy `RankWarning` filter |
+| `cache.py` | GitHub-only. Drops the `s3_cloud` host, the PyGithub repository-*listing* helpers, and `git_most_recent_tag` — so no `github` or `requests` dependency |
+| `dc3data.py` | Two registered paths: `tests` and `templates`, both GitHub-hosted |
+
+**Branch resolution is retained in full, and it is load-bearing.** `_build_remote_url` puts the
+checked-out branch into the download URL, so a fixture added on a feature branch is fetched from
+*that* branch. Verified empirically that `pygit2.Repository` performs **upward discovery** — from
+`pypeit/pkg` it resolved `/Users/westfall/Work/packages/pypeit/.git` and reported the branch — which
+is why this works under `tox`, where the package is installed beneath `.tox/`, still inside the
+checkout. Without it the URL silently falls back to `main` and CI fails on any branch that adds
+data, with an error that looks nothing like its cause. **`pygit2` is therefore in the `test`
+extra**, not optional for testing.
+
+### `dc3/par/` — ⬜ not started
+
+This is where the first structural decision has to be settled. Two decisions are deliberately
+left open for the implementation to settle, both by prototyping rather than by argument:
 
 1. **Whether `ParSet` is built on `pydantic` v2** or on PypeIt's hand-rolled design. Prototype one
    parameter set both ways first. What pydantic does not give free: `to_rst_table`,
@@ -112,12 +155,15 @@ to their documentation rather than reproducing it; anything internal to `dc3` ge
 
 ## Deviations from the plan
 
-*Nothing yet.* Each entry should record what changed, why, and whether the plan was amended to
-match or the deviation is a one-off.
+Each entry records what changed, why, and whether the plan was amended to match or the deviation
+is a one-off.
 
 | Phase | Deviation | Reason | Plan amended? |
 |---|---|---|---|
-| — | — | — | — |
+| 0 | Fixture provenance file is `PROVENANCE.toml`, not `MANIFEST.toml` | The plan's name collides with the unrelated `MANIFEST.in` at the repository root — two files named `MANIFEST.*`, different formats, different purposes. Noted in `dc3/data/tests/README.rst`. | ⬜ not yet |
+| 0 | No root `CHANGES.rst`; changelog in `doc/releases/` | Follows PypeIt's current practice rather than its deprecated file. | ⬜ not yet |
+| 0 | `[project.scripts]` left empty | Entry points are added as each script is written, so a `pip install` never advertises a command that does not exist. | ⬜ not yet |
+| 1 | `pygit2` added to the `test` extra | Not in the plan. Required for correct branch resolution in the cache; see above. | ⬜ not yet |
 
 ---
 
@@ -154,3 +200,10 @@ Tracks the fourteen verification items in the plan.
   `ParSet` and `FuncPar`, superseding `funcpar_update`, and the rebase caveat is withdrawn. Added
   the `FuncPar` scope rule (third-party functions only) to the ground rules. See the plan's
   Phase 1, "Parameters", for the full statement.
+- **2026-09-16** — **Phase 0 Deliverable 2 complete and Phase 1 begun** (commit `94aeb32`).
+  Recorded the repository scaffold, the `$ENVS_HOME/dc3` environment (Python 3.13, editable
+  install, which pulled ppxf 9.5.0 — the plan's floor), and the completed `dc3/pkg/` sub-package.
+  Documented the empirical finding that `pygit2` performs upward repository discovery, which is
+  what makes the cache's branch resolution work under `tox`, and the consequence that `pygit2`
+  must be a test requirement. Opened the deviations table with four entries. Work paused with
+  `dc3/par/` not yet started; that is where the `ParSet` prototype decision gets settled.
