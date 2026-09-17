@@ -392,6 +392,39 @@ def test_toml_keeps_none_valued_parameters_discoverable(tmp_path):
         'The commented placeholder was parsed as a value rather than left unset'
 
 
+@pytest.mark.parametrize(
+    'awkward',
+    [
+        r'C:\Users\someone\output',       # a Windows path
+        r'a\tb',                          # a literal backslash-t, not a tab
+        'a "quoted" phrase',              # embedded double quotes
+        r'^\s*(\d+)$',                    # a regular expression
+        'trailing backslash\\',
+    ]
+)
+def test_toml_escapes_awkward_strings(awkward, tmp_path):
+    """
+    A string containing a backslash or a quote survives the round trip.
+
+    A TOML basic string treats a backslash as an escape, so emitting one
+    verbatim produces a file that cannot be read back.  Windows paths make this
+    certain, but a regular expression or a quoted phrase does it just as well,
+    so it is not a platform quirk.
+    """
+    class Awkward(ParSet):
+        default_key = 'awkward'
+        value: Annotated[str, Field(default='', description='A string value.')]
+
+    par = Awkward(value=awkward)
+    f = tmp_path / 'awkward.toml'
+    par.to_toml(cfg_file=f)
+
+    assert tomllib.loads(f.read_text())['awkward']['value'] == awkward, \
+        'The emitted TOML did not parse back to the string that was written'
+    assert Awkward.from_toml(f).value == awkward, \
+        'The parameter set did not survive a round trip through TOML'
+
+
 def test_from_toml_missing_section(tmp_path):
     """Asking for a section that is not in the file is an error, not a default."""
     f = tmp_path / 'other.toml'

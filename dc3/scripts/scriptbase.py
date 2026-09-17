@@ -278,7 +278,11 @@ class ScriptBase:
         """
         p = Path(path_pattern).expanduser()
         parts = p.parts[p.is_absolute():]
-        return Path(p.root).glob(str(Path(*parts)))
+        # NOTE: anchor, not root.  On Windows the root of an absolute path is
+        # just the separator and the drive letter lives in the anchor, so
+        # globbing from the root would search the current drive rather than the
+        # named one.  On POSIX the two are identical.
+        return Path(p.anchor).glob(str(Path(*parts)))
 
 
 def configure_matplotlib(show):

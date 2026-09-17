@@ -776,3 +776,18 @@ Tracks the fourteen verification items in the plan.
   rescaled by `(1+z)`, is met more strongly: neither array moves. The velocity round-trip test
   composes redshifts multiplicatively and checks the velocities add, so it would fail under either
   of the other two velocity conventions.
+- **2026-09-17** — Fixed two defects surfaced by the Windows CI job after the GitHub upload (302
+  tests). **Neither is really platform-specific**; Windows only makes them certain.
+
+  `_toml_value` emitted strings with an f-string, but a TOML basic string treats a backslash as an
+  escape, so any value containing one produced a file that could not be read back. A Windows path
+  is the obvious case, but a regular expression or a quoted phrase does it equally well — and
+  `a\tb` was worse than a crash: it **parsed successfully as a literal tab**, silently changing
+  the value. Now emitted with `json.dumps`, whose escaping is a subset of what a TOML basic string
+  accepts. Five awkward strings are pinned by test, all of which fail against the old emitter.
+
+  `ScriptBase.expandpath` globbed from `Path.root`, which on Windows is just the separator — the
+  drive letter lives in `Path.anchor` — so the search ran on the current drive rather than the
+  named one. Now uses `anchor`, which is identical to `root` on POSIX. The reasoning is pinned
+  with `PureWindowsPath`/`PurePosixPath` so it is verified on any platform rather than only where
+  it bites. **This one is inherited from PypeIt**, whose `scriptbase.py` has the same `p.root`.

@@ -32,6 +32,7 @@ written against the other:
 .. include:: ../include/links.rst
 """
 
+import json
 import re
 import shutil
 import textwrap
@@ -143,7 +144,12 @@ def _toml_value(value):
     if isinstance(value, (float, np.floating)):
         return repr(float(value))
     if isinstance(value, (str, Path)):
-        return f'"{value}"'
+        # NOTE: json.dumps, not an f-string, because a TOML basic string treats
+        # a backslash as an escape.  Any value containing one -- a Windows path
+        # most obviously, but also a regular expression or a quoted phrase --
+        # would otherwise emit a file that cannot be read back.  JSON's string
+        # escaping is a subset of what a TOML basic string accepts.
+        return json.dumps(str(value))
     if isinstance(value, (list, tuple, np.ndarray)):
         return '[' + ', '.join(_toml_value(v) for v in value) + ']'
     if value is None:

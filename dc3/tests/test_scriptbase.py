@@ -4,7 +4,7 @@ Tests for :class:`~dc3.scripts.scriptbase.ScriptBase`.
 
 import argparse
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import matplotlib
 import pytest
@@ -181,6 +181,28 @@ def test_expandpath_handles_wildcards_in_directories(tmp_path):
     found = sorted(p.name for p in ScriptBase.expandpath(str(tmp_path / 'run*' / '*.fits')))
     assert found == ['spec.fits', 'spec.fits'], \
         'A wildcard in a directory component was not expanded'
+
+
+def test_expandpath_globs_from_the_anchor_not_the_root():
+    """
+    The search starts at the anchor, which on Windows retains the drive.
+
+    An absolute Windows path has a root of just the separator, with the drive
+    letter held separately in the anchor, so globbing from the root would search
+    the current drive rather than the named one.  Checked against a
+    :class:`pathlib.PureWindowsPath` so that the reasoning is verified on any
+    platform, rather than only where it would actually bite.
+    """
+    windows = PureWindowsPath(r'C:\data\run*\*.fits')
+    assert windows.root == '\\', 'Test assumes the Windows root is just the separator'
+    assert windows.anchor == 'C:\\', 'Test assumes the Windows anchor retains the drive'
+    assert windows.anchor != windows.root, \
+        'On Windows the anchor and root differ, which is why expandpath must use the anchor'
+
+    # On POSIX the two coincide, so the change is safe here
+    posix = PurePosixPath('/data/run*/*.fits')
+    assert posix.anchor == posix.root == '/', \
+        'On POSIX the anchor and root should coincide, so using the anchor changes nothing'
 
 
 def test_configure_matplotlib_forces_a_headless_backend():
