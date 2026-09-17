@@ -704,3 +704,19 @@ Tracks the fourteen verification items in the plan.
   wavelength grid so coarse (69 km/s per pixel) that the dispersions under test were sub-pixel and
   unphysical, and an emission-line comb built with a single dispersion where the dispersion varied
   across the range.
+- **2026-09-17** — **Traced the `varsmooth` behaviour to an upstream off-by-one**, at the user's
+  request to confirm it was not an undersampling artefact (277 tests). It is not: the defect fires
+  at 0.5 px, well inside the accurate range, and a perturbation of one part in 10¹² to a single
+  element of `sig_x` flips the result from 0.867 px to exactly 0.500 px. The cause is
+  `n = int(np.ceil(xs[-1] - xs[0]))`, which under-counts by one whenever `sig_x/gradient(x)` is
+  *exactly* uniform — the 0.1-px clip is only the trigger, since it replaces every smaller value
+  with the same literal. Wrote `prototypes/ppxf_varsmooth_offbyone.{py,md}`: a self-contained
+  reproduction depending only on `numpy` and `ppxf`, and a report proposing `+ 1`. Established
+  that `oversample` is **not** a workaround — it converges to ≈0.65 px rather than 0.5, trading
+  the missing sample for interpolation onto a finer grid.
+
+  Added two regression tests. `dc3`'s own construction yields an *exactly uniform* kernel whenever
+  the two resolutions differ by a constant, which is a common case; it escapes the defect only
+  because `numpy.gradient` of a realistic logarithmic grid carries floating-point noise. That is
+  luck, not design, so it is now pinned: were it to stop holding, every `dvar_inst` from such a run
+  would be silently wrong.

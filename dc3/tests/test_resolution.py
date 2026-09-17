@@ -387,8 +387,9 @@ def test_varsmooth_below_the_clip_applies_a_much_wider_kernel(requested):
     A behavioural assertion on an undocumented, unexported upstream constant.
     The measured behaviour is worse than the clip alone would suggest: any
     request below 0.1 px produces a realised kernel of about 0.71 px -- roughly
-    seven times the clip -- because the coordinate stretch degenerates and what
-    remains is the interpolation round-trip rather than the intended Gaussian.
+    seven times the clip.  See
+    :func:`test_uniform_kernel_triggers_the_upstream_off_by_one` for the actual
+    cause, which is not the clip.
 
     This is why ``epsilon_sigma`` below :data:`VARSMOOTH_MIN_SIG` is refused
     rather than quietly raised: a spectrum prepared with such a request would
@@ -404,6 +405,81 @@ def test_varsmooth_below_the_clip_applies_a_much_wider_kernel(requested):
         f'A request of {requested} px gave a realised kernel of {realised:.3f} px, not the '
         '0.714 px measured when this was written; the upstream behaviour has changed and the '
         'consequences for dvar_inst need re-deriving'
+    )
+
+
+def test_uniform_kernel_triggers_the_upstream_off_by_one():
+    """
+    Pin the upstream defect that makes a sub-clip kernel misbehave.
+
+    ``varsmooth`` sizes its internal grid as ``n = ceil(xs[-1] - xs[0])`` with
+    ``xs = cumsum(sig_max/sig)``.  Since ``sig_max/sig >= 1``, that span is at
+    least ``N - 1``, with equality *only* when ``sig`` is exactly uniform -- and
+    then ``ceil`` returns one sample fewer than the input, so the interpolation
+    round-trip broadens the result.
+
+    The clip is only the trigger, by making ``sig`` exactly uniform.  The defect
+    itself is width-independent: it fires here at 0.5 px, well inside the range
+    where the convolution is supposed to be accurate.  A perturbation of one
+    part in 1e-12 to a single interior element restores the correct answer,
+    which is what rules out any numerical explanation.
+    """
+    npix = 800
+    index = np.arange(npix, dtype=float)
+    sigma_in = 4.0
+    y = np.exp(-0.5 * np.square((index - npix / 2) / sigma_in))
+    # An abscissa whose numpy.gradient is exactly 1.0, so sig equals sig_x
+    x = index.copy()
+
+    def realised(out):
+        mean = np.sum(out * index) / np.sum(out)
+        width = np.sqrt(np.sum(out * np.square(index - mean)) / np.sum(out))
+        return np.sqrt(max(width ** 2 - sigma_in ** 2, 0.0))
+
+    uniform = np.full(npix, 0.5)
+    assert not np.isclose(realised(ppxf_util.varsmooth(x, y, uniform)), 0.5, atol=0.05), (
+        'A uniform 0.5 px kernel on an exactly uniform grid was applied correctly; the upstream '
+        'off-by-one appears to be fixed, and the guard on epsilon_sigma can be revisited'
+    )
+
+    perturbed = uniform.copy()
+    perturbed[npix // 2] *= 1 - 1e-12
+    assert np.isclose(realised(ppxf_util.varsmooth(x, y, perturbed)), 0.5, rtol=0.02), (
+        'Perturbing one interior element by 1e-12 did not restore the correct kernel; the cause '
+        'is no longer the integer sample count, so the diagnosis needs redoing'
+    )
+
+
+def test_dc3_grids_avoid_the_off_by_one():
+    """
+    A uniform kernel on a realistic grid is applied correctly.
+
+    dc3's own construction produces an exactly uniform kernel whenever the two
+    resolutions differ by a constant, which is a common case.  It escapes the
+    upstream defect only because ``numpy.gradient`` of a logarithmic wavelength
+    grid carries floating-point noise, so ``sig`` is not *exactly* uniform.
+    That is luck rather than design, so it is pinned here: if it ever ceases to
+    hold, every ``dvar_inst`` from such a run would be wrong.
+    """
+    npix = 800
+    match = resolution.match_resolution(
+        np.full(npix, 30.0), np.full(npix, 50.0), VELSCALE
+    )
+    assert np.all(match.kernel_sigma == match.kernel_sigma[0]), \
+        'A constant resolution difference should give an exactly uniform kernel'
+
+    index = np.arange(npix, dtype=float)
+    sigma_in = 4.0
+    flux = np.exp(-0.5 * np.square((index - npix / 2) / sigma_in))
+    out = resolution.apply_kernel(loglam(npix), flux, match)
+    mean = np.sum(out * index) / np.sum(out)
+    width = np.sqrt(np.sum(out * np.square(index - mean)) / np.sum(out))
+    measured = np.sqrt(max(width ** 2 - sigma_in ** 2, 0.0))
+
+    assert np.isclose(measured, match.kernel_sigma_pixels[0], rtol=0.05), (
+        f'A uniform kernel of {match.kernel_sigma_pixels[0]:.3f} px was applied as '
+        f'{measured:.3f} px; the upstream off-by-one is now firing on dc3 grids and dvar_inst '
+        'is wrong wherever the two resolutions differ by a constant'
     )
 
 

@@ -145,13 +145,30 @@ variable-:math:`\sigma` kernel becomes constant, and that stretch diverges as
     request under 0.1 pixels is not honoured, and neither is it raised to 0.1:
     measured against a resolved Gaussian, *any* request below the clip yields a
     realised kernel of about **0.71 pixels** -- some seven times the clip
-    itself.  With the stretch degenerate, what survives is the interpolation
-    round-trip rather than the intended Gaussian.
+    itself.
 
-    So a spectrum prepared with a sub-clip request would be broadened by
-    0.71 px while the bookkeeping recorded the request, and ``dvar_inst`` would
-    be wrong by the whole difference.  This is why :func:`match_resolution`
-    refuses such a value rather than quietly raising it.
+    The cause is not the clip, and not undersampling.  ``varsmooth`` sizes its
+    internal stretched grid as ``n = ceil(xs[-1] - xs[0])``, where
+    ``xs = cumsum(sig_max/sig)``.  Because ``sig_max/sig >= 1`` by construction,
+    that span is at least ``N - 1``, with equality **if and only if** ``sig`` is
+    exactly uniform -- in which case ``ceil`` returns ``N - 1``, one sample
+    short of the input, and the interpolation onto that shortened grid and back
+    broadens the result.  The clip merely *causes* exact uniformity, by
+    replacing every sub-0.1 value with the same literal, and so exposes the
+    off-by-one.
+
+    It is not confined to the clip: a genuinely uniform kernel on a grid whose
+    ``numpy.gradient`` is exact triggers it at any width.  Requesting a uniform
+    0.5-pixel kernel on ``x = numpy.arange(n)`` yields 0.87 pixels; perturbing
+    one interior element of ``sig_x`` by one part in :math:`10^{12}` restores
+    the correct 0.500.  See ``test_resolution.py``, which pins both regimes.
+
+    ``dc3`` is insulated on both counts.  The sub-clip path is closed by
+    :func:`match_resolution` refusing an ``epsilon_sigma`` below the clip, so
+    ``sig`` is never clipped at all.  The uniform-kernel path stays open in
+    principle but does not fire on a realistic logarithmic grid, where
+    ``numpy.gradient`` carries floating-point noise -- which is luck rather than
+    design, hence the regression test.
 """
 
 
