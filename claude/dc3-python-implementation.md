@@ -351,6 +351,26 @@ invocation acts *on*. Under that split, input and output paths would not be `Par
 all, and `DC3Par.output_dir` is the one currently on the wrong side of it. That is a hypothesis,
 not a decision.
 
+### A pre-processing utility for linearly sampled spectra
+
+⬜ **Unresolved. Raised by the user when `grid_from_wave` was written.**
+
+`dc3` **refuses** a linearly sampled wavelength vector rather than resampling it silently, which
+is the right call: every velocity in the package assumes logarithmic sampling, so accepting one
+would give results wrong in a way nothing downstream could detect.
+
+But that leaves a user holding a linear spectrum with no supported route in. `Resample` can do the
+conversion and is now available, so the missing piece is a **utility script** exposing it as an
+explicit pre-processing step — which also keeps the conversion visible in the provenance rather
+than buried.
+
+**Before writing it, compare the available implementations.** `specutils` has its own resampling
+machinery (`FluxConservingResampler` and friends), and `Resample` is now carried here from
+`mangadap`. They should be compared on flux conservation, error propagation, and handling of
+partially covered output pixels before one is made the recommended path. Related to the
+`specutils`-at-the-boundary rule: if `specutils` does this as well, the utility should prefer it
+and `Resample` can stay internal.
+
 ### Inverse variance or 1-sigma errors in `Spectra`
 
 ⬜ **Unresolved. Raised by the user while `dc3/spectra.py` was being written.**
@@ -406,9 +426,10 @@ to their documentation rather than reproducing it; anything internal to `dc3` ge
 
 🔵 **In progress.**
 
-### `dc3/core/sampling.py` — ✅ complete
+### `dc3/core/velocity.py` — ✅ complete
 
-The logarithmic grid and the velocity/redshift conversions. 12 tests.
+The velocity/redshift conversions. Split out of `sampling.py` at the user's request: the
+conversions and the spectral sampling machinery serve distinct purposes. 5 tests.
 
 **Three velocities, named rather than flagged.** The original C++ carried an unresolved to-do
 asking whether every routine used `dl/l = v/c` or `calcz()`, which is exactly the confusion that
@@ -422,9 +443,28 @@ velocities, which is what makes de-redshifting separable from fitting — the ve
 the velocity fitted simply add. There is a test asserting both that it holds for `log_velocity`
 and that it fails for `classical_velocity`, so the test is discriminating rather than vacuous.
 
+### `dc3/core/sampling.py` — ✅ complete
+
+The logarithmic grid, the grid helpers, and `Resample`. 27 tests.
+
 **A linear wavelength grid is refused**, not resampled or tolerated. Every velocity in `dc3`
 assumes logarithmic sampling, so accepting one would give results wrong in a way nothing
-downstream could detect.
+downstream could detect. (See the open question on a pre-processing utility.)
+
+**`Resample` is adapted from `mangadap`, not PypeIt.** The two implementations were diffed: they
+are *identical* apart from covariance, which PypeIt has commented out wholesale for want of a
+`Covariance` class. So `mangadap`'s is the complete version.
+
+**Covariance now uses `astropy.nddata.Covariance`**, per the plan, rather than `mangadap`'s own
+class that was upstreamed and generalized. Three call sites had to change, found by inspecting the
+upstreamed API: `variance()` became a property, `full()` became `to_dense()`, and `impose_triu`
+became `assume_symmetric`. A test exercises the covariance path and asserts the result is *not*
+diagonal — resampling must correlate neighbouring output pixels, and a diagonal result would mean
+the machinery was silently doing nothing.
+
+**One behavioural fix.** `mangadap`'s `Resample` adopts the caller's `mask` array by reference and
+then merges the masks of `y` and `e` into it with `|=`, modifying an array the caller still holds.
+It is copied here, with a test.
 
 ### `dc3/spectra.py` — ✅ complete
 
@@ -444,8 +484,8 @@ boundary and not touched again inside the fit. 23 tests.
 
 ### Remaining — ⬜ not started
 
-`dc3/core/resolution.py` (the `dvar_inst` machinery), `dc3/core/deredshift.py`,
-`dc3/templates.py`, and the resampling adopted from `mangadap`.
+`dc3/core/resolution.py` (the `dvar_inst` machinery), `dc3/core/deredshift.py`, and
+`dc3/templates.py`.
 
 ---
 
@@ -584,3 +624,14 @@ Tracks the fourteen verification items in the plan.
   design, since it depends on what a typical invocation looks like and there is no working fitter
   to try one against. Noted that `resolve_par` does not constrain the answer, and that four
   path-like parameters already in `dc3par.py` sit on the line in question.
+- **2026-09-17** — **Phase 2 begun.** Added `dc3/core/velocity.py`, `dc3/core/sampling.py` and
+  `dc3/spectra.py` (243 tests in total). Split the velocity conversions into their own module at
+  the user's request. Ported `Resample` from `mangadap` after diffing it against PypeIt's copy,
+  which turned out to be the same code with covariance commented out; adapted the three call sites
+  where the upstreamed `astropy.nddata.Covariance` differs from `mangadap`'s original, and fixed
+  `Resample` mutating the caller's mask array in place. Adopted the r-string convention for
+  docstrings containing LaTeX, applied to the eight existing cases. Recorded three further open
+  questions raised by the user: whether the relativistic velocity conversions should exist at all;
+  whether `Spectra` should hold inverse variance or 1-sigma errors; and that a pre-processing
+  utility is needed for linearly sampled spectra, preceded by a comparison of the `specutils` and
+  `mangadap` resampling implementations.

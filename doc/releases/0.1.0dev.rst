@@ -64,8 +64,11 @@ Functionality/Performance Improvements and Additions
 
 - Added the ``dc3_version`` script.
 
+- Added ``dc3.core.velocity``, providing the conversions between velocity and
+  redshift.
+
 - Added ``dc3.core.sampling``, providing the logarithmic wavelength grid and the
-  conversions between velocity and redshift.
+  ``Resample`` class for flux-conserving resampling.
 
 - Added ``dc3.spectra.Spectra``, the internal representation of a set of spectra
   sharing one logarithmic wavelength grid.

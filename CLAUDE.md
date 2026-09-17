@@ -73,6 +73,8 @@ These are easy to violate accidentally and expensive to unpick.
   and `E501` (line length) and nothing else.
 - **Avoid `import ... as`.** Industry-standard aliases (`import numpy as np`)
   are fine; otherwise import the module or name directly.
+- **Any docstring containing a backslash is an r-string** (`r"""`), so that
+  LaTeX in `:math:` roles reads as written rather than being double-escaped.
 - Docstrings are **NumPy style**, rendered by `numpydoc`. References to objects
   in other packages take an **explicit role** so that intersphinx resolves them
   — `` :class:`numpy.ndarray` ``, `` :func:`astropy.stats.sigma_clip` `` — not

@@ -1,4 +1,4 @@
-"""
+r"""
 The internal representation of a set of spectra.
 
 This is the object the fit actually works on.  It is deliberately plain: plain
@@ -28,7 +28,7 @@ Quantity       Convention
 ``wave``       Vacuum wavelength in Angstroms, pixel centres
 ``flux``       Arbitrary, but consistent across a set
 ``ivar``       Inverse variance of ``flux``, in the inverse square of its units
-``sres``       Instrumental dispersion :math:`\\sigma` in km/s
+``sres``       Instrumental dispersion :math:`\sigma` in km/s
 =============  =====================================================================
 
 .. warning::
@@ -90,7 +90,7 @@ class SpectrumMask(BitMaskArray):
 
 
 class Spectra:
-    """
+    r"""
     A set of spectra sharing one logarithmic wavelength grid.
 
     A single spectrum is the ``nspec == 1`` case; the arrays are always 2-D
@@ -101,9 +101,9 @@ class Spectra:
     flux : :class:`numpy.ndarray`
         Flux, of shape ``(nspec, npix)`` or ``(npix,)``.
     log10lam0 : float
-        :math:`\\log_{10}` of the first pixel's central wavelength.
+        :math:`\log_{10}` of the first pixel's central wavelength.
     dloglam : float
-        Pixel size in :math:`\\log_{10}\\lambda`.
+        Pixel size in :math:`\log_{10}\lambda`.
     ivar : :class:`numpy.ndarray`, optional
         Inverse variance of ``flux``, with the same shape.  **Only the galaxy
         carries errors**; templates are treated as noise-free throughout, which
@@ -131,9 +131,9 @@ class Spectra:
     cont : :class:`numpy.ndarray`, None
         Continuum, shape ``(nspec, npix)``.
     log10lam0 : float
-        :math:`\\log_{10}` of the first pixel's central wavelength.
+        :math:`\log_{10}` of the first pixel's central wavelength.
     dloglam : float
-        Pixel size in :math:`\\log_{10}\\lambda`.
+        Pixel size in :math:`\log_{10}\lambda`.
     nspec : int
         Number of spectra.
     npix : int
