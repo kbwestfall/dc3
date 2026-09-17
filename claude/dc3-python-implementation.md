@@ -351,6 +351,41 @@ invocation acts *on*. Under that split, input and output paths would not be `Par
 all, and `DC3Par.output_dir` is the one currently on the wrong side of it. That is a hypothesis,
 not a decision.
 
+### Inverse variance or 1-sigma errors in `Spectra`
+
+⬜ **Unresolved. Raised by the user while `dc3/spectra.py` was being written.**
+
+`Spectra` currently holds `ivar`, following the MaNGA and PypeIt convention. It suits the places
+`dc3` uses it — weighting is a multiplication rather than a division, and an unusable pixel is
+naturally zero rather than infinite — but a user supplies and reads 1-sigma errors, so the
+convention pushes a conversion to every boundary, and that overhead may outweigh what it buys.
+
+Noted in the module's `todo`. Only this class and the ingest functions would change.
+
+### Whether the relativistic velocity conversions should exist at all
+
+⬜ **Unresolved. Raised by the user while `dc3/core/sampling.py` was being written.**
+
+`sampling.py` provides three named velocity conversions — `log_velocity` (c ln(1+z), the internal
+convention), `relativistic_velocity`, and `classical_velocity` — because the original C++ carried
+an unresolved to-do about exactly this confusion.
+
+The user's position is that the relativistic form probably should not be there, and the reasoning
+is worth recording because it resolves the C++'s open question rather than inheriting it. Two
+distinct things get called "redshift", and the special-relativistic Doppler formula suits neither
+case `dc3` meets:
+
+- A galaxy's **systemic redshift** is predominantly *cosmological* — metric expansion, not motion
+  through space. The relativistic Doppler formula does not describe it, so using it is a category
+  error rather than a refinement.
+- The **stellar kinematics** `dc3` measures are peculiar velocities of a few hundred km/s, where
+  `β ~ 1e-3` and the relativistic correction is `~β²/2 ~ 5e-7` — sub-m/s, orders of magnitude
+  below any uncertainty here.
+
+**Retained for now, unused on any internal path**, with the reasoning in the module's `todo`
+directive. Removing them later costs nothing; the decision is flagged rather than taken because it
+is a scientific judgement, not a coding one.
+
 ### The datamodel decision — ⬜ still open
 
 **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
@@ -367,7 +402,54 @@ to their documentation rather than reproducing it; anything internal to `dc3` ge
 
 ---
 
-## Phases 2–8
+## Phase 2 — Spectral core
+
+🔵 **In progress.**
+
+### `dc3/core/sampling.py` — ✅ complete
+
+The logarithmic grid and the velocity/redshift conversions. 12 tests.
+
+**Three velocities, named rather than flagged.** The original C++ carried an unresolved to-do
+asking whether every routine used `dl/l = v/c` or `calcz()`, which is exactly the confusion that
+arises when one word covers three quantities. They are therefore separate named functions —
+`log_velocity` (c ln(1+z)), `relativistic_velocity`, `classical_velocity` — so a call site states
+which it means.
+
+`log_velocity` is the internal convention, and the reason is worth stating: **it is the only one
+of the three that is additive on a logarithmic grid.** Composing two redshifts adds their
+velocities, which is what makes de-redshifting separable from fitting — the velocity removed and
+the velocity fitted simply add. There is a test asserting both that it holds for `log_velocity`
+and that it fails for `classical_velocity`, so the test is discriminating rather than vacuous.
+
+**A linear wavelength grid is refused**, not resampled or tolerated. Every velocity in `dc3`
+assumes logarithmic sampling, so accepting one would give results wrong in a way nothing
+downstream could detect.
+
+### `dc3/spectra.py` — ✅ complete
+
+The internal container: plain contiguous `float64` arrays on a shared logarithmic grid, with
+units fixed by convention and documented rather than carried. `specutils` is used at the I/O
+boundary and not touched again inside the fit. 23 tests.
+
+- **Always 2-D.** A single spectrum is `nspec == 1`, so nothing downstream special-cases it.
+- **`mean()` averages unmasked pixels only**, which is load-bearing rather than a detail: the mean
+  is subtracted before correlation, so including masked pixels would make the zero point of the
+  cross-correlation function depend on how much was masked, coupling the kinematics to the
+  masking. Tested against the unmasked case so the assertion is discriminating.
+- **Unusable values are detected, not trusted to the caller.** A non-finite flux, a non-positive
+  inverse variance and a non-positive `sres` are flagged on construction whatever the input mask
+  says.
+- `SpectrumBitMask` declares seven bits, including `UNMATCHED` for the resolution work to come.
+
+### Remaining — ⬜ not started
+
+`dc3/core/resolution.py` (the `dvar_inst` machinery), `dc3/core/deredshift.py`,
+`dc3/templates.py`, and the resampling adopted from `mangadap`.
+
+---
+
+## Phases 3–8
 
 ⬜ **Not started.** See the plan.
 
