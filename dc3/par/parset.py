@@ -48,7 +48,7 @@ from pydantic import BaseModel, ConfigDict
 from ..pkg.exceptions import DC3CodingError, DC3ParameterError
 
 
-__all__ = ['ParSet']
+__all__ = ['ParSet', 'document_parameters', 'parameter_docstring']
 
 
 def _is_parset(obj):
@@ -914,3 +914,132 @@ def _wrap_print(head, output, tcols):
         return
     _head = [head] + [tail] * (len(lines) - 1)
     print('\n'.join(h + l for h, l in zip(_head, lines)))
+
+
+def document_parameters(par, placeholder='{parameters}', width=79):
+    """
+    Fill a function's docstring with a parameter set's descriptions.
+
+    The decorated function is one that a :class:`ParSet` is expanded over, as
+    ``func(..., **par.to_kwargs())``.  Its docstring carries a ``placeholder``
+    where the NumPy-style entries for those keywords belong, and this replaces
+    it with entries generated from the parameter set:
+
+    .. code-block:: python
+
+        @document_parameters(TemplatePar)
+        def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1):
+            \"\"\"
+            Run the preparation pipeline.
+
+            Parameters
+            ----------
+            library : TemplateLibrary
+                The raw templates.
+            galaxy : :class:`~dc3.spectra.Spectra`
+                The galaxy spectra.
+            {parameters}
+            \"\"\"
+
+    The parameter set is the single source of the text, so the description a
+    user reads in the configuration file, in the generated parameter table, and
+    in ``help(func)`` is the same string.  Transcribing it into the docstring
+    instead would put the authoritative wording in two places, and the one that
+    is read most is the one least likely to be updated.
+
+    Parameters
+    ----------
+    par : type
+        The :class:`ParSet` subclass whose parameters are being documented.
+    placeholder : str, optional
+        The text in the docstring that is replaced.  It must be alone on its
+        line; the indentation of that line sets the indentation of the
+        generated block.
+    width : int, optional
+        The width the generated text is wrapped to.
+
+    Returns
+    -------
+    callable
+        A decorator that rewrites ``__doc__`` and returns the function.
+
+    Raises
+    ------
+    DC3CodingError
+        Raised if the function has no docstring, or if the docstring does not
+        contain the placeholder alone on a line.
+    """
+    def decorator(func):
+        if func.__doc__ is None:
+            raise DC3CodingError(
+                f'{func.__name__} has no docstring, so there is nowhere to put the '
+                f'{par.__name__} parameters.'
+            )
+        lines = func.__doc__.split('\n')
+        matched = [i for i, line in enumerate(lines) if line.strip() == placeholder]
+        if len(matched) != 1:
+            raise DC3CodingError(
+                f'The docstring of {func.__name__} must contain {placeholder} exactly once, '
+                f'alone on a line, to mark where the {par.__name__} parameters go; found it '
+                f'{len(matched)} times.'
+            )
+        i = matched[0]
+        indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+        func.__doc__ = '\n'.join(
+            lines[:i] + parameter_docstring(par, indent=indent, width=width) + lines[i+1:]
+        )
+        return func
+    return decorator
+
+
+def parameter_docstring(par, indent='', width=79):
+    """
+    Render a parameter set as NumPy-style docstring entries.
+
+    Every parameter is marked ``optional``, since a :class:`ParSet` declares a
+    default for each one, and a parameter restricted to a fixed set of values
+    reports them in place of its type, which is what NumPy style asks for.
+
+    Parameters
+    ----------
+    par : type
+        The :class:`ParSet` subclass to render.
+    indent : str, optional
+        Leading whitespace applied to the name line; the description is indented
+        four further spaces.
+    width : int, optional
+        The width the description is wrapped to, including the indentation.
+
+    Returns
+    -------
+    list
+        The lines of the rendered entries.
+
+    Raises
+    ------
+    DC3ParameterError
+        Raised if any parameter is itself a parameter set, since a function
+        keyword is never a parameter set.
+    """
+    nested = par.nested()
+    if len(nested) > 0:
+        raise DC3ParameterError(
+            f'{par.__name__} contains nested parameter sets ({nested}), so it does not describe '
+            'the keywords of a function.'
+        )
+    lines = []
+    for key, f in par.model_fields.items():
+        options = _field_options(f.annotation)
+        dtype = _type_name(f.annotation) if options is None \
+            else '{' + ', '.join(repr(o) for o in options) + '}'
+        lines += [f'{indent}{key} : {dtype}, optional']
+        # NOTE: break_on_hyphens and break_long_words are both off because the
+        # descriptions are reStructuredText.  Splitting "Nyquist-sampled" or a
+        # role such as :class:`numpy.ndarray` across lines would change what
+        # Sphinx renders, not just where the line ends.
+        lines += textwrap.wrap(
+            f.description, width=width, initial_indent=f'{indent}    ',
+            subsequent_indent=f'{indent}    ', break_on_hyphens=False,
+            break_long_words=False
+        )
+    return lines

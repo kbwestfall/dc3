@@ -19,7 +19,9 @@ from pydantic import Field, ValidationError, model_validator
 import pytest
 
 from dc3.par.funcpar import FuncPar
-from dc3.par.parset import ParSet, _is_parset, _plain_reference
+from dc3.par.parset import (
+    ParSet, _is_parset, _plain_reference, document_parameters, parameter_docstring
+)
 from dc3.pkg.exceptions import DC3CodingError, DC3ParameterError
 
 
@@ -369,6 +371,70 @@ def test_to_kwargs_keeps_python_objects():
     assert isinstance(p.to_dict()['output_dir'], str), \
         'to_dict did not serialize a Path, so it could not be written to TOML'
     assert p.to_kwargs()['velscale_ratio'] == 1, 'to_kwargs did not return the parameter value'
+
+
+def test_parameter_docstring_renders_numpy_style():
+    """
+    The generated entries carry the type, the options, and the description.
+
+    Options are rendered in place of the type, which is what NumPy style asks
+    for and is more informative than reporting ``str``.
+    """
+    lines = parameter_docstring(ExampleFitPar, indent='    ')
+    text = '\n'.join(lines)
+    assert "    method : {'lsq', 'de', 'mcmc'}, optional" in lines, \
+        'A parameter restricted to a fixed set of values does not report them as its type'
+    assert '    moments : int, optional' in lines, \
+        'An unrestricted parameter does not report its type'
+    for f in ExampleFitPar.model_fields.values():
+        assert f.description.split('.')[0] in text, \
+            'The rendered entry does not carry the declared description'
+
+
+def test_document_parameters_fills_the_placeholder():
+    """The placeholder is replaced, and the rest of the docstring is untouched."""
+    @document_parameters(ExampleFitPar)
+    def example(moments=2):
+        """
+        Summary line.
+
+        Parameters
+        ----------
+        {parameters}
+
+        Returns
+        -------
+        None
+        """
+    assert '{parameters}' not in example.__doc__, 'The placeholder was not replaced'
+    assert 'Summary line.' in example.__doc__, 'Replacing the placeholder lost the summary'
+    assert 'Returns' in example.__doc__, 'Replacing the placeholder lost a later section'
+    assert 'moments : int, optional' in example.__doc__, \
+        'The generated entries were not inserted'
+
+
+def test_document_parameters_requires_the_placeholder():
+    """
+    A docstring with nowhere to put the parameters is a coding error.
+
+    Failing at import is the point: it is what makes removing the placeholder
+    impossible to do quietly.
+    """
+    with pytest.raises(DC3CodingError, match='exactly once'):
+        @document_parameters(ExampleFitPar)
+        def _no_placeholder():
+            """A docstring with no placeholder."""
+
+    with pytest.raises(DC3CodingError, match='no docstring'):
+        @document_parameters(ExampleFitPar)
+        def _no_docstring():
+            pass
+
+
+def test_document_parameters_rejects_a_nested_parameter_set():
+    """A nested set does not describe a function's keywords."""
+    with pytest.raises(DC3ParameterError, match='nested parameter sets'):
+        parameter_docstring(ExampleDC3Par)
 
 
 def test_to_kwargs_rejects_a_nested_parameter_set():

@@ -172,7 +172,7 @@ class TemplatePar(ParSet):
     )]
     epsilon_sigma: Annotated[float, Field(
         default=0.1, ge=0.1,
-        description='Target for the MINIMUM dispersion of the preparation kernel, in pixels.  '
+        description='Target for the *minimum* dispersion of the preparation kernel, in pixels.  '
                     'The floor of 0.1 is not arbitrary: ppxf_util.varsmooth silently clips its '
                     'kernel to 0.1 pixels, bounding the coordinate stretch of its algorithm, '
                     'which diverges as the kernel width goes to zero.  A smaller value here '
@@ -183,7 +183,7 @@ class TemplatePar(ParSet):
     sigma_floor: Annotated[float, Field(
         default=0.0, ge=0.0,
         description='Largest pedestal, in km/s, allowed to accommodate template regions of '
-                    'LOWER resolution than the galaxy.  This sets the most negative dvar_inst, '
+                    '*lower* resolution than the galaxy.  This sets the most negative dvar_inst, '
                     'and hence the floor it imposes on the measurable astrophysical dispersion.'
     )]
     mask_unmatched_idsp: Annotated[bool, Field(
@@ -194,9 +194,9 @@ class TemplatePar(ParSet):
     )]
     varsmooth_oversample: Annotated[int, Field(
         default=1, ge=1,
-        description='Oversampling of the INTERNAL stretched grid used by the variable-sigma '
+        description='Oversampling of the *internal* stretched grid used by the variable-sigma '
                     'convolution, which reduces its interpolation error.  This is a different '
-                    'knob from velscale_ratio, which oversamples the OUTPUT grid; the two '
+                    'knob from velscale_ratio, which oversamples the *output* grid; the two '
                     'address different error terms and should not be conflated.'
     )]
     fiducial_method: Annotated[Literal['median', 'min', 'max'], Field(
@@ -480,7 +480,7 @@ class FitPar(ParSet):
     mask_vdiff_unit: Annotated[Literal['km/s', 'pixel'], Field(
         default='km/s',
         description='Unit in which mask_vdiff is expressed.  The C++ implementation encoded '
-                    'this in the SIGN of mask_vdiff, which is split out here.'
+                    'this in the *sign* of mask_vdiff, which is split out here.'
     )]
     sigma_max: Annotated[float, Field(
         default=600.0, gt=0.0,

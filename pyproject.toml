@@ -58,6 +58,10 @@ mcmc = [
 ]
 test = [
     "coverage",
+    # numpydoc supplies the docstring parser used to check that a function's
+    # Parameters section still agrees with the ParSet it is generated from.
+    # See dc3.tests.test_dc3par.test_parset_matches_its_docstring.
+    "numpydoc>=1.8",
     # pygit2 lets the cache resolve the checked-out branch, so that a test
     # fetching a fixture added on a feature branch gets it from THAT branch
     # rather than from main.  Without it the branch silently defaults and CI

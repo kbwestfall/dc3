@@ -70,6 +70,8 @@ import warnings
 import numpy as np
 
 from .core import resolution, sampling
+from .par.dc3par import TemplatePar
+from .par.parset import document_parameters
 from .pkg.exceptions import DC3Error
 from .spectra import Spectra, SpectrumMask
 
@@ -309,6 +311,7 @@ def _fiducial_on_template_grid(template_wave, galaxy_wave, fiducial_idsp):
     return np.interp(template_wave, galaxy_wave, fiducial_idsp), outside
 
 
+@document_parameters(TemplatePar)
 def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.0,
             mask_unmatched_idsp=False, varsmooth_oversample=1, fiducial_method='median'):
     r"""
@@ -321,9 +324,11 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
 
         prepared = templates.prepare(library, galaxy, **par.template.to_kwargs())
 
-    The agreement between the two is checked by the test suite rather than
-    asserted here, since a disagreement is a coding error rather than something
-    a user can cause.
+    Their descriptions below are generated from that parameter set rather than
+    written here, so the text cannot drift from the one a user reads in the
+    configuration file.  That the keywords and defaults themselves agree is
+    checked by the test suite, since a disagreement is a coding error rather
+    than something a user can cause.
 
     Parameters
     ----------
@@ -332,21 +337,7 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
     galaxy : :class:`~dc3.spectra.Spectra`
         The galaxy spectra, which supply the fiducial resolution and the
         sampling to match.  They are read, never altered.
-    velscale_ratio : int, optional
-        Integer number of prepared-template pixels per galaxy pixel.
-    epsilon_sigma : float, optional
-        Target for the minimum dispersion of the preparation kernel, in pixels.
-    sigma_floor : float, optional
-        Largest pedestal, in km/s, allowed to accommodate template regions of
-        lower resolution than the galaxy.
-    mask_unmatched_idsp : bool, optional
-        Mask template regions that cannot be brought to the target resolution.
-    varsmooth_oversample : int, optional
-        Oversampling of the internal stretched grid used by the variable-sigma
-        convolution.
-    fiducial_method : str, optional
-        How the galaxy set is reduced to one resolution; see
-        :func:`~dc3.spectra.Spectra.fiducial_resolution`.
+    {parameters}
 
     Returns
     -------

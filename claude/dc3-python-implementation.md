@@ -873,3 +873,34 @@ Tracks the fourteen verification items in the plan.
   must between them cover `dc3par.__all__`, so a new parameter set forces a decision about which
   it is rather than silently escaping the check. `check_declaration` gained a `flat=True` mode for
   the same reason, promoting a run-time failure at the call site to a declaration error.
+- **2026-09-17** — **The function docstring's Parameters section is now generated from the
+  `ParSet`** (340 tests in total), closing the remaining drift the previous entry's check did not
+  cover: it compared keywords and defaults, but each description existed as two independent
+  strings.
+
+  The first proposal was a test comparing the two texts, with normalization to absorb the
+  ALL-CAPS emphasis the descriptions used. **The user corrected the premise**: following PypeIt,
+  the descriptions are rendered into the documentation by the reflection-based table generator, so
+  they are **Sphinx**, and their appearance in TOML comments is the convenience, not the other way
+  round. That removes the only reason the two texts differed in form — and with it the case for
+  comparing rather than generating. Converted the five emphasis instances (`MINIMUM`, `LOWER`,
+  `INTERNAL`, `OUTPUT`, `SIGN`) to reST.
+
+  `document_parameters(par)` substitutes a `{parameters}` placeholder in `__doc__` at import,
+  rendering each field as a NumPy-style entry. A field restricted by `Literal` reports its options
+  in place of its type, `{'median', 'min', 'max'}`, which is idiomatic and strictly more than the
+  hand-written `str` said. Wrapping turns off `break_on_hyphens` and `break_long_words`, since the
+  text is reST: splitting `Nyquist-sampled`, or a role across a line, changes what Sphinx renders.
+
+  Two objections considered and accepted. The decorator makes `dc3.templates` import
+  `dc3.par.dc3par`, which the `to_kwargs` pattern had deliberately avoided; the coupling is
+  import-time only and one-directional, and `prepare` remains callable with plain keywords. And
+  the source now shows a placeholder rather than the text, which costs the reader of the file
+  something and gains the reader of `help()` the authoritative wording.
+
+  `test_parset_matches_its_docstring` parses the *rendered* docstring with
+  `numpydoc.docscrape.FunctionDoc` and compares it to the field descriptions, rather than calling
+  the generator — otherwise it would agree with itself and pass even if the decorator were
+  removed. Verified by removing the decorator and hand-writing the section: it fails, naming the
+  parameter and printing both texts. `numpydoc` moved into the `test` extra for the parser; it was
+  in `docs` only, which `tox`'s test environments do not install.

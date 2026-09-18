@@ -8,8 +8,10 @@ trips -- rather than the behaviour of the base class, which
 """
 
 import inspect
+import re
 import tomllib
 
+from numpydoc.docscrape import FunctionDoc
 import pytest
 from pydantic import ValidationError
 
@@ -146,6 +148,46 @@ def test_parset_matches_its_function(cls, func):
         assert accepted[key].default == value, \
             f'{cls.__name__}.{key} defaults to {value!r} but {func.__name__} defaults to ' \
             f'{accepted[key].default!r}; the two calling routes would not agree'
+
+
+@pytest.mark.parametrize(
+    'cls,func', list(EXPANDED_PARSETS.items()),
+    ids=[c.__name__ for c in EXPANDED_PARSETS]
+)
+def test_parset_matches_its_docstring(cls, func):
+    """
+    The function's documented parameters are the parameter set's, verbatim.
+
+    :func:`~dc3.par.parset.document_parameters` generates the Parameters
+    entries from the parameter set, so agreement holds by construction -- but
+    only for as long as the decorator is applied and its placeholder is in the
+    docstring.  Dropping either would leave the entries hand-written and free to
+    drift, silently, which is exactly what the arrangement exists to prevent.
+    This is the check that notices.
+
+    It compares the rendered text rather than calling the generator, so that it
+    fails rather than agreeing with itself if the section is hand-written again.
+    """
+    documented = {p.name: p for p in FunctionDoc(func)['Parameters']}
+    signature = inspect.signature(func)
+    assert set(documented) == set(signature.parameters), (
+        f'{func.__name__} and its docstring disagree: '
+        f'undocumented: {sorted(set(signature.parameters) - set(documented))}; '
+        f'documented but not in the signature: '
+        f'{sorted(set(documented) - set(signature.parameters))}'
+    )
+
+    for key, f in cls.model_fields.items():
+        entry = documented[key]
+        assert entry.type.endswith(', optional'), \
+            f'{func.__name__} does not document {key} as optional, though it has a default'
+        rendered = re.sub(r'\s+', ' ', ' '.join(entry.desc)).strip()
+        expected = re.sub(r'\s+', ' ', f.description).strip()
+        assert rendered == expected, (
+            f'The docstring entry for {func.__name__}({key}=) is not the description declared '
+            f'by {cls.__name__}.  It should be generated from the parameter set, not written '
+            f'out.\n  docstring: {rendered}\n  parameter set: {expected}'
+        )
 
 
 # ----------------------------------------------------------------------

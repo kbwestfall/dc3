@@ -52,10 +52,9 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.par.dc3par``, the dc3 parameter sets themselves:
   ``TemplateLibraryPar``, ``TemplatePar``, ``ConvolvePar``, ``CorrelatePar``,
   ``MaskPar``, ``WindowPar``, ``ContinuumPar``, ``FitPar``, ``QAPar``, and the
-  top-level ``DC3Par``. These
-  expose a number of values that were hardwired in the C++ implementation,
-  including the apodization window, the sub-Nyquist convolution floor, the
-  fit-window width, and the optimizer parameter scales.
+  top-level ``DC3Par``. These expose a number of values that were hardwired in
+  the C++ implementation, including the apodization window, the sub-Nyquist
+  convolution floor, the fit-window width, and the optimizer parameter scales.
 
 - Added ``dc3.core.bitmask``, providing ``BitMask`` for the bit definitions and
   operations on raw integer values, and ``BitMaskArray`` for a mask array whose
@@ -104,3 +103,7 @@ Functionality/Performance Improvements and Additions
   that a parameter set can be expanded over the keywords of the function it
   configures. ``dc3.templates.prepare`` is the first such function; a test
   checks that the two agree key for key and default for default.
+
+- Added ``dc3.par.parset.document_parameters``, a decorator that fills a
+  function's docstring Parameters section from the parameter set it is called
+  with, so the two cannot carry different text.
