@@ -41,6 +41,20 @@ These are easy to violate accidentally and expensive to unpick.
    documentation rather than reproducing it. Anything internal to `dc3` gets a
    hand-written `ParSet` with full `dtype`, `options` and `descr`.
 10. **Backwards compatibility with the C++ formats and CLI is not a goal.**
+11. **A `ParSet` is declared in the module whose code it configures**, not in a
+    central file — `mangadap`'s arrangement, not PypeIt's. `dc3/par/` holds the
+    machinery (`parset.py`, `funcpar.py`); the aggregate `DC3Par` currently sits
+    in `dc3par.py` and imports the modules that declare its members. That is not
+    necessarily its final home: by the same mantra it belongs beside whatever
+    class drives the full workflow, and it should move there once that exists.
+    Two consequences, both easy to violate:
+    - **A consumer module imports `dc3.par.parset`, never the module holding the
+      aggregate and never the `dc3.par` namespace.** The aggregate imports the
+      consumers; an import in the other direction closes a cycle.
+    - **`dc3/par/__init__.py` exports `ParSet` and `FuncPar` only.** Re-exporting
+      a concrete set there makes reaching the machinery run the aggregate, which
+      breaks `import dc3.templates` — *not* `import dc3.par` — with a traceback
+      pointing away from the cause.
 
 ## Conventions
 

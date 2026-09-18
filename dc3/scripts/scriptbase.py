@@ -163,6 +163,24 @@ class ScriptBase:
         """
         Add the option naming a TOML configuration file.
 
+        .. note::
+
+            This takes the class, though it uses only its ``default_key``, and
+            that has a cost worth knowing about.  Parameter sets are declared
+            beside the code they configure, so :class:`~dc3.par.dc3par.DC3Par`
+            imports most of the package; a script that names it here therefore
+            pays for ``numpy``, ``scipy``, ``ppxf`` and ``matplotlib`` to print
+            its ``--help``, which is what the rule about script imports living
+            inside ``main`` exists to avoid.  Measured, that is roughly 0.6 s
+            against 2.1 s.
+
+            The class is taken anyway, because passing the key as a string puts
+            the section name in two places and invites exactly the drift the
+            1:1 configuration rule forbids.  No script needs
+            :class:`~dc3.par.dc3par.DC3Par` yet, so the cost is not being paid;
+            revisit it when one does, at which point an import inside
+            :func:`get_parser` would confine it to the scripts that use it.
+
         Parameters
         ----------
         parser : :class:`argparse.ArgumentParser`

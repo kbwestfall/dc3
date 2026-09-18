@@ -220,7 +220,7 @@ class ParSet(BaseModel):
 
     - **Parameter sets ``dc3`` owns** use Sphinx syntax referring to this
       package's own API documentation, e.g.
-      ``':class:`~dc3.par.dc3par.TemplatePar`'``.
+      ``':class:`~dc3.templates.TemplatePar`'``.
     - **:class:`~dc3.par.funcpar.FuncPar` subclasses**, which wrap a third-party
       function and defer to *its* documentation rather than reproducing it, use
       either an intersphinx cross-reference, e.g.
@@ -260,6 +260,38 @@ class ParSet(BaseModel):
             Field names whose value is a :class:`ParSet`.
         """
         return [k for k, f in cls.model_fields.items() if _is_parset(f.annotation)]
+
+    @classmethod
+    def reachable(cls, found=None):
+        """
+        Return every parameter set reachable from this one, including itself.
+
+        The parameter sets are declared beside the code they configure, so there
+        is no single module that lists them.  Walking down from the top-level
+        set is what replaces that list: it enumerates exactly the sets that a
+        run can be configured with, which is what the uniqueness of
+        ``default_key`` and ``card_prefix`` has to hold over.
+
+        Parameters
+        ----------
+        found : list, optional
+            Parameter sets already collected, used when recursing.  A set is
+            visited once however many times it is nested, so a set reached by
+            two routes is not repeated.
+
+        Returns
+        -------
+        list
+            The parameter sets, this one first.
+        """
+        if found is None:
+            found = []
+        if cls in found:
+            return found
+        found.append(cls)
+        for key in cls.nested():
+            cls.model_fields[key].annotation.reachable(found=found)
+        return found
 
     @classmethod
     def field_default(cls, key):

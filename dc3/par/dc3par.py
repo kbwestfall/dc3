@@ -6,6 +6,16 @@ with full types, options and descriptions, because ``dc3`` owns them; parameters
 belonging to a wrapped third-party function are declared instead as a
 :class:`~dc3.par.funcpar.FuncPar`.
 
+**A parameter set is declared in the module whose code it configures**, not
+here: :class:`~dc3.templates.TemplatePar` lives in :mod:`dc3.templates` beside
+:func:`~dc3.templates.prepare`, which it is expanded over.  This module holds
+the top-level :class:`DC3Par` that nests them, so it necessarily imports every
+module that declares one.  The arrangement is ``mangadap``'s rather than
+PypeIt's, and it is what lets a module that wraps a third-party function declare
+the corresponding :class:`~dc3.par.funcpar.FuncPar` without a central file
+having to import that dependency.  The sets that remain below are those whose
+module is not yet written; each moves out as its phase lands.
+
 Relative to the C++ implementation, this exposes a good deal that used to be
 **hardwired** in ``DC3_express.cpp`` and therefore unreachable: the apodization
 window, the sub-Nyquist convolution floor, the fit-window factor, and the
@@ -29,11 +39,10 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from .parset import ParSet
+from ..templates import TemplateLibraryPar, TemplatePar
 
 
 __all__ = [
-    'TemplateLibraryPar',
-    'TemplatePar',
     'ConvolvePar',
     'CorrelatePar',
     'MaskPar',
@@ -43,170 +52,6 @@ __all__ = [
     'QAPar',
     'DC3Par',
 ]
-
-
-class TemplateLibraryPar(ParSet):
-    """
-    Definition of a stellar template library as it is stored on disk.
-
-    This says *what* the library is and how to read it.  It is deliberately
-    separate from :class:`TemplatePar`, which says how the library is *prepared*
-    for fitting: the two change independently.  A library is a fixed property of
-    an installation, declared once and reused, whereas the preparation follows
-    from the galaxy data being fit.
-
-    Modelled on ``mangadap.proc.templatelibrary.TemplateLibraryDef``, which
-    solves the same problem.
-
-    .. note::
-
-        The reader that consumes these parameters is not yet written; see the
-        implementation record.  They are declared now because they fix the
-        configuration surface that :func:`~dc3.templates.prepare` sits behind.
-    """
-
-    default_key = 'library'
-    card_prefix = 'LIB'
-    api_doc = ':class:`~dc3.par.dc3par.TemplateLibraryPar`'
-    default_comment = 'Definition of the stellar template library.'
-
-    key: Annotated[str | None, Field(
-        default=None,
-        description='Keyword identifying the library.  It names the library in the output and '
-                    'is part of the key under which a prepared library is cached.'
-    )]
-    file_search: Annotated[str | None, Field(
-        default=None,
-        description='Search pattern, relative to the library root, matching the one-dimensional '
-                    'FITS spectra that make up the library.'
-    )]
-    fwhm: Annotated[float | None, Field(
-        default=None, gt=0.0,
-        description='FWHM of the resolution element, in angstroms, taken as constant with '
-                    'wavelength.  Superseded by resolution_ext where that is given.  This is '
-                    'converted to an instrumental dispersion in km/s on ingest, since that is '
-                    'the internal convention.'
-    )]
-    resolution_ext: Annotated[str | None, Field(
-        default=None,
-        description='Name of the extension holding the spectral resolution, R = lambda/dlambda, '
-                    'as a function of wavelength.  Supersedes fwhm.  Converted to an '
-                    'instrumental dispersion in km/s on ingest.'
-    )]
-    in_vacuum: Annotated[bool, Field(
-        default=False,
-        description='The library wavelengths are vacuum wavelengths.  If False they are air '
-                    'wavelengths and are converted on ingest.'
-    )]
-    wave_limit: Annotated[list[float] | None, Field(
-        default=None,
-        description='Two-element lower and upper wavelength limit, in angstroms, outside which '
-                    'the library spectra are not valid.  Omit it to use the full range of each '
-                    'spectrum; an individual end cannot be left unbounded.'
-    )]
-    lower_flux_limit: Annotated[float | None, Field(
-        default=None,
-        description='Smallest valid flux.  Pixels below this are masked, which is how libraries '
-                    'that pad their spectra with zeros are handled.'
-    )]
-    log10: Annotated[bool, Field(
-        default=False,
-        description='The library spectra are already sampled logarithmically in wavelength.  If '
-                    'False they are resampled on ingest.'
-    )]
-
-    @model_validator(mode='after')
-    def _check_wave_limit(self):
-        """
-        Check that the wavelength limit is a valid two-element range.
-
-        Returns
-        -------
-        TemplateLibraryPar
-            The validated parameter set.
-
-        Raises
-        ------
-        ValueError
-            Raised if the limit does not have two elements, or is not ordered.
-        """
-        if self.wave_limit is None:
-            return self
-        if len(self.wave_limit) != 2:
-            raise ValueError(
-                f'wave_limit must have exactly two elements; got {len(self.wave_limit)}.'
-            )
-        if self.wave_limit[0] >= self.wave_limit[1]:
-            raise ValueError(
-                f'wave_limit must be ordered; got {self.wave_limit}.'
-            )
-        return self
-
-
-class TemplatePar(ParSet):
-    """
-    Parameters governing template preparation.
-
-    Template preparation runs **once per execution**, never per spectrum, and is
-    never part of the cost function.  It has two steps: resolution matching to a
-    fiducial galaxy resolution, offset by a constant instrumental variance
-    ``dvar_inst``; then resampling to the galaxy's sampling at an integer
-    ``velscale_ratio``.
-
-    These are the keyword arguments of :func:`~dc3.templates.prepare`, one for
-    one, so the two are called as ``prepare(library, galaxy, **par.to_kwargs())``
-    and cannot drift apart without a test failing.  *What* library is prepared is
-    declared separately, by :class:`TemplateLibraryPar`.
-    """
-
-    default_key = 'template'
-    card_prefix = 'TPL'
-    api_doc = ':class:`~dc3.par.dc3par.TemplatePar`'
-    default_comment = 'Template preparation, run once per execution.'
-
-    velscale_ratio: Annotated[int, Field(
-        default=1, ge=1,
-        description='Integer number of prepared-template pixels per galaxy pixel.  Oversampling '
-                    'the template keeps its line-spread function Nyquist-sampled on its own '
-                    'grid, which relaxes one of the two bounds on the instrumental offset.'
-    )]
-    epsilon_sigma: Annotated[float, Field(
-        default=0.1, ge=0.1,
-        description='Target for the *minimum* dispersion of the preparation kernel, in pixels.  '
-                    'The floor of 0.1 is not arbitrary: ppxf_util.varsmooth silently clips its '
-                    'kernel to 0.1 pixels, bounding the coordinate stretch of its algorithm, '
-                    'which diverges as the kernel width goes to zero.  A smaller value here '
-                    'would mean the code believed it applied a narrower kernel than it did, '
-                    'making dvar_inst wrong by the difference and biasing the astrophysical '
-                    'dispersion low.'
-    )]
-    sigma_floor: Annotated[float, Field(
-        default=0.0, ge=0.0,
-        description='Largest pedestal, in km/s, allowed to accommodate template regions of '
-                    '*lower* resolution than the galaxy.  This sets the most negative dvar_inst, '
-                    'and hence the floor it imposes on the measurable astrophysical dispersion.'
-    )]
-    mask_unmatched_idsp: Annotated[bool, Field(
-        default=False,
-        description='Mask template regions that cannot be brought to the target resolution.  '
-                    'If False, such regions are retained and the resolution mismatch is '
-                    'reported rather than hidden.'
-    )]
-    varsmooth_oversample: Annotated[int, Field(
-        default=1, ge=1,
-        description='Oversampling of the *internal* stretched grid used by the variable-sigma '
-                    'convolution, which reduces its interpolation error.  This is a different '
-                    'knob from velscale_ratio, which oversamples the *output* grid; the two '
-                    'address different error terms and should not be conflated.'
-    )]
-    fiducial_method: Annotated[Literal['median', 'min', 'max'], Field(
-        default='median',
-        description='How the galaxy set is reduced to the single fiducial resolution the '
-                    'templates are matched to.  Unless every galaxy spectrum has the same '
-                    'resolution, the fiducial matches none of them exactly; "min" takes the '
-                    'highest resolution present and so makes dvar_inst most negative, "max" '
-                    'the lowest and so most positive.'
-    )]
 
 
 class ConvolvePar(ParSet):

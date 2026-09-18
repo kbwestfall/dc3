@@ -49,12 +49,12 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.par.FuncPar``, a ``ParSet`` whose parameters are derived from the
   signature of a wrapped third-party function.
 
-- Added ``dc3.par.dc3par``, the dc3 parameter sets themselves:
-  ``TemplateLibraryPar``, ``TemplatePar``, ``ConvolvePar``, ``CorrelatePar``,
-  ``MaskPar``, ``WindowPar``, ``ContinuumPar``, ``FitPar``, ``QAPar``, and the
-  top-level ``DC3Par``. These expose a number of values that were hardwired in
-  the C++ implementation, including the apodization window, the sub-Nyquist
-  convolution floor, the fit-window width, and the optimizer parameter scales.
+- Added the dc3 parameter sets themselves: ``TemplateLibraryPar``,
+  ``TemplatePar``, ``ConvolvePar``, ``CorrelatePar``, ``MaskPar``,
+  ``WindowPar``, ``ContinuumPar``, ``FitPar``, ``QAPar``, and the top-level
+  ``DC3Par``. These expose a number of values that were hardwired in the C++
+  implementation, including the apodization window, the sub-Nyquist convolution
+  floor, the fit-window width, and the optimizer parameter scales.
 
 - Added ``dc3.core.bitmask``, providing ``BitMask`` for the bit definitions and
   operations on raw integer values, and ``BitMaskArray`` for a mask array whose
@@ -107,3 +107,11 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.par.parset.document_parameters``, a decorator that fills a
   function's docstring Parameters section from the parameter set it is called
   with, so the two cannot carry different text.
+
+- Parameter sets are now declared in the module whose code they configure:
+  ``TemplateLibraryPar`` and ``TemplatePar`` moved to ``dc3.templates``.
+  ``dc3.par`` provides the machinery, ``ParSet`` and ``FuncPar``, and
+  ``dc3.par.dc3par`` the top-level ``DC3Par`` that nests the rest.
+
+- Added ``ParSet.reachable``, which collects every parameter set nested below a
+  given one.

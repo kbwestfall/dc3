@@ -8,6 +8,8 @@ constrains how a parameter set is written, so it belongs with the tests that
 enforce it.
 """
 
+import importlib
+import pkgutil
 import tomllib
 import warnings
 from pathlib import Path
@@ -18,6 +20,7 @@ from ppxf import ppxf_util
 from pydantic import Field, ValidationError, model_validator
 import pytest
 
+import dc3
 from dc3.par.funcpar import FuncPar
 from dc3.par.parset import (
     ParSet, _is_parset, _plain_reference, document_parameters, parameter_docstring
@@ -103,6 +106,41 @@ def all_parset_subclasses(cls=ParSet):
         subclasses.append(sub)
         subclasses += all_parset_subclasses(sub)
     return subclasses
+
+
+def package_parset_subclasses():
+    """
+    Collect every :class:`~dc3.par.parset.ParSet` the package itself declares.
+
+    Every ``dc3`` module is imported first.  ``__subclasses__`` only reports
+    classes that have been *defined*, so without that a parameter set would
+    escape the checks below simply because nothing had imported its module --
+    which, now that each is declared beside the code it configures, is easy to
+    arrange by accident.
+
+    :class:`~dc3.par.funcpar.FuncPar` is excluded: it is an abstract base that
+    wraps nothing, and the concrete subclasses it exists for are ordinary
+    parameter sets that are collected here like any other.
+
+    Returns
+    -------
+    list
+        The parameter sets declared under ``dc3``, excluding test code.
+
+    Raises
+    ------
+    ImportError
+        Raised if any module in the package fails to import.
+    """
+    for info in pkgutil.walk_packages(dc3.__path__, prefix='dc3.'):
+        if '.tests' in info.name:
+            continue
+        importlib.import_module(info.name)
+    return [
+        cls for cls in all_parset_subclasses()
+        if cls.__module__.startswith('dc3.') and '.tests' not in cls.__module__
+        and cls is not FuncPar
+    ]
 
 
 class no_deprecation:
@@ -191,15 +229,12 @@ def test_package_parsets_are_declared_completely():
     """
     Every ParSet the package ships documents all of its parameters.
 
-    Restricted to ``dc3.par``: this module deliberately defines invalid
-    parameter sets to test the checker itself, and some of them are created
-    inside test functions, so an unfiltered walk of ``__subclasses__`` would
-    pick them up or not depending on test execution order.
+    Restricted to what the package declares: this module deliberately defines
+    invalid parameter sets to test the checker itself, and some of them are
+    created inside test functions, so an unfiltered walk of ``__subclasses__``
+    would pick them up or not depending on test execution order.
     """
-    subclasses = [
-        cls for cls in all_parset_subclasses() if cls.__module__.startswith('dc3.par')
-    ]
-    for cls in subclasses:
+    for cls in package_parset_subclasses():
         check_declaration(cls)
 
 

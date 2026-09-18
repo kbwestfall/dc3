@@ -5,13 +5,14 @@ Tests for :mod:`~dc3.templates`.
 import warnings
 
 import numpy as np
+from pydantic import ValidationError
 import pytest
 
 from dc3 import templates
 from dc3.core import sampling
-from dc3.par.dc3par import TemplatePar
 from dc3.pkg.exceptions import DC3Error
 from dc3.spectra import Spectra
+from dc3.templates import TemplateLibraryPar, TemplatePar
 
 
 GALAXY_DLOGLAM = 1.09e-5
@@ -53,6 +54,32 @@ def prepare_quietly(library, galaxy, par=None):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         return templates.prepare(library, galaxy, **par.to_kwargs())
+
+
+# ----------------------------------------------------------------------
+# The parameter sets
+# ----------------------------------------------------------------------
+def test_epsilon_sigma_floor_matches_varsmooth():
+    """
+    epsilon_sigma cannot be set below the clip inside the upstream convolution.
+
+    Allowing it would mean the code believed it applied a narrower kernel than
+    it did, making the instrumental offset wrong by the difference.
+    """
+    assert TemplatePar().epsilon_sigma == 0.1, \
+        'epsilon_sigma default does not match the upstream varsmooth clip of 0.1 px'
+    with pytest.raises(ValidationError):
+        TemplatePar(epsilon_sigma=0.05)
+
+
+@pytest.mark.parametrize(
+    'wave_limit', [[5000.0], [4000.0, 5000.0, 6000.0], [7000.0, 3000.0]],
+    ids=['too-short', 'too-long', 'out-of-order']
+)
+def test_library_wavelength_limit_must_be_an_ordered_pair(wave_limit):
+    """A wavelength limit that is not an ordered pair is rejected."""
+    with pytest.raises(ValidationError):
+        TemplateLibraryPar(wave_limit=wave_limit)
 
 
 # ----------------------------------------------------------------------

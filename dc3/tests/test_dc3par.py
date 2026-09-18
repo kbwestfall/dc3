@@ -5,10 +5,18 @@ These check the declarations themselves -- that every parameter is documented,
 that the cross-parameter rules fire, and that the whole set survives the round
 trips -- rather than the behaviour of the base class, which
 ``test_parset.py`` covers.
+
+The parameter sets are declared beside the code they configure, so there is no
+module that lists them.  :func:`~dc3.par.parset.ParSet.reachable` supplies the
+list instead, walking down from :class:`~dc3.par.dc3par.DC3Par`.  That is the
+stronger definition anyway: it enumerates exactly the sets a run can be
+configured with, which is what the uniqueness checks below have to hold over.
 """
 
 import inspect
 import re
+import subprocess
+import sys
 import tomllib
 
 from numpydoc.docscrape import FunctionDoc
@@ -17,13 +25,14 @@ from pydantic import ValidationError
 
 from dc3 import templates
 from dc3.par import dc3par
-from dc3.par.dc3par import ContinuumPar, DC3Par, FitPar, TemplatePar
+from dc3.par.dc3par import ContinuumPar, DC3Par, FitPar
 from dc3.par.parset import ParSet
+from dc3.templates import TemplateLibraryPar, TemplatePar
 
-from .test_parset import check_declaration
+from .test_parset import check_declaration, package_parset_subclasses
 
 
-ALL_PARSETS = [getattr(dc3par, name) for name in dc3par.__all__]
+ALL_PARSETS = DC3Par.reachable()
 
 # The parameter sets that are expanded over a function's keywords, paired with
 # the function they configure.  A set listed here must agree with its function
@@ -36,15 +45,15 @@ EXPANDED_PARSETS = {
 # Every dc3 parameter set must appear either here or in EXPANDED_PARSETS, so
 # that adding one is a deliberate decision about which it is.
 UNEXPANDED_PARSETS = {
-    dc3par.TemplateLibraryPar: 'Declares a library on disk; its reader is not yet written.',
+    TemplateLibraryPar: 'Declares a library on disk; its reader is not yet written.',
     dc3par.ConvolvePar: 'Consumed inside the fit, not at a single function boundary.',
     dc3par.CorrelatePar: 'Consumed inside the fit, not at a single function boundary.',
     dc3par.MaskPar: 'Consumed inside the fit, not at a single function boundary.',
     dc3par.WindowPar: 'Consumed inside the fit, not at a single function boundary.',
-    dc3par.ContinuumPar: 'Consumed inside the fit, not at a single function boundary.',
-    dc3par.FitPar: 'Consumed inside the fit, not at a single function boundary.',
+    ContinuumPar: 'Consumed inside the fit, not at a single function boundary.',
+    FitPar: 'Consumed inside the fit, not at a single function boundary.',
     dc3par.QAPar: 'Read by the plotting tier, which is not yet written.',
-    dc3par.DC3Par: 'The top-level set; it nests the others and is never expanded.',
+    DC3Par: 'The top-level set; it nests the others and is never expanded.',
 }
 
 
@@ -83,18 +92,51 @@ def test_section_keys_are_unique():
 
 def test_every_parset_is_reachable_from_the_top():
     """
-    Each parameter set is nested in DC3Par.
+    Each parameter set the package declares is nested somewhere in DC3Par.
 
     A set that is declared but not reachable would never be read from a
     configuration file or written to a header, so it would silently keep its
-    defaults.
+    defaults.  This matters more now that the sets are declared beside the code
+    they configure: adding one to a module is easy, and forgetting to nest it is
+    easier still, because the module works perfectly well without it.
     """
-    nested = {DC3Par.model_fields[key].annotation for key in DC3Par.nested()}
-    for cls in ALL_PARSETS:
-        if cls is DC3Par:
-            continue
-        assert cls in nested, \
-            f'{cls.__name__} is declared but not nested in DC3Par, so it can never be configured'
+    for cls in package_parset_subclasses():
+        assert cls in ALL_PARSETS, (
+            f'{cls.__name__} is declared in {cls.__module__} but is not reachable from DC3Par, '
+            'so it can never be configured.  Nest it, directly or through a set that is.'
+        )
+
+
+# ----------------------------------------------------------------------
+# The import direction the layout depends on
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize('module', sorted({cls.__module__ for cls in ALL_PARSETS}))
+def test_consumer_modules_import_alone(module):
+    """
+    A module declaring a parameter set imports without help.
+
+    The layout runs one way only: a module declares its own parameter set and
+    imports :mod:`dc3.par.parset` for the machinery, and :mod:`dc3.par.dc3par`
+    imports those modules to nest them.  Were anything to import back the other
+    way -- most easily by :mod:`dc3.par` re-exporting a concrete set, so that
+    reaching the machinery runs the aggregate -- the cycle would close.
+
+    It would not fail on ``import dc3.par``, which is the import that looks
+    suspicious; it fails on the consumer, reporting a partially initialized
+    module and pointing at the parameter set rather than at the re-export that
+    caused it.  So each consumer is imported here **first, in a fresh
+    interpreter**, which is the only arrangement that catches it: within this
+    session the modules are long since imported, and the order that breaks is
+    exactly the one a test run does not take.
+    """
+    result = subprocess.run(
+        [sys.executable, '-c', f'import {module}'], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f'{module} cannot be imported on its own:\n{result.stderr}\n'
+        'Check that nothing in dc3.par imports back into the modules that declare '
+        'parameter sets; see dc3/par/__init__.py.'
+    )
 
 
 # ----------------------------------------------------------------------
@@ -212,19 +254,6 @@ def test_published_defaults():
         'Apodization default differs from the empirically justified choice of none'
     assert par.correlate.length_factor == 2.2, 'Transform length factor differs from 2.2'
     assert par.mask.grow_sigma == 2.0, 'Mask grow/shrink factor differs from the published value'
-
-
-def test_epsilon_sigma_floor_matches_varsmooth():
-    """
-    epsilon_sigma cannot be set below the clip inside the upstream convolution.
-
-    Allowing it would mean the code believed it applied a narrower kernel than
-    it did, making the instrumental offset wrong by the difference.
-    """
-    assert TemplatePar().epsilon_sigma == 0.1, \
-        'epsilon_sigma default does not match the upstream varsmooth clip of 0.1 px'
-    with pytest.raises(ValidationError):
-        TemplatePar(epsilon_sigma=0.05)
 
 
 # ----------------------------------------------------------------------

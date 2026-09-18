@@ -904,3 +904,57 @@ Tracks the fourteen verification items in the plan.
   removed. Verified by removing the decorator and hand-writing the section: it fails, naming the
   parameter and printing both texts. `numpydoc` moved into the `test` extra for the parser; it was
   in `docs` only, which `tox`'s test environments do not install.
+- **2026-09-17** — **Adopted `mangadap`'s parameter-set layout in place of PypeIt's** (345 tests in
+  total): a `ParSet` is declared in the module whose code it configures, leaving `dc3par.py` with
+  the aggregate `DC3Par` and imports of the modules that declare its members. Prompted by the
+  user, after the previous entry's `templates -> par.dc3par` import was flagged as a symptom
+  rather than an incidental cost.
+
+  **Three findings decided it, two of them contrary to what I expected.**
+
+  *The cycle is real and fires on the wrong module.* Built as a scratch reproduction:
+  `import dc3.templates` runs `par/__init__.py`, which imports the aggregate, which imports
+  `dc3.templates` — still on its first line. It fails on the **consumer**, not on `dc3.par`, with a
+  traceback pointing at the parameter set rather than at the re-export. Reordering
+  `par/__init__.py` does not help; only dropping the concrete re-exports does. That is now a hard
+  rule in `CLAUDE.md`, and `test_consumer_modules_import_alone` runs each consumer **in a fresh
+  interpreter**, since within a test session the modules are long since imported and the order
+  that breaks is exactly the one a test run does not take. Verified by reinstating the re-export:
+  it fails.
+
+  *The `--help` cost is measurable.* Warm, best of three: `dc3.par.dc3par` 0.56 s (numpy, astropy,
+  pydantic) against `dc3.templates` 2.07 s (**plus scipy, ppxf, matplotlib**). Under the new layout
+  anything needing `DC3Par` imports the package, and `add_config_argument` takes the class during
+  parser construction — so a script naming it would pay ppxf to print `--help`, against the rule
+  that put script imports inside `main`. **Decided to keep taking the class**: passing the key as a
+  string would put the section name in two places, which is the drift the 1:1 rule forbids. No
+  script needs `DC3Par` yet, so the cost is not being paid; the note in `scriptbase.py` records the
+  measurement and says an import inside `get_parser` is the answer when one does.
+
+  *The deciding argument is one I had not weighed.* The plan requires ppxf imports stay localized
+  to `core/resolution.py` and `core/losvd.py` so the wheel can be made ppxf-optional. A `FuncPar`
+  wrapping `ppxf_util.varsmooth` — which Phase 2/3 calls for — would put `import ppxf` in a
+  monolithic `dc3par.py`. The PypeIt layout does not merely make that awkward; it makes it
+  **non-compliant**. Co-location is the only arrangement satisfying both.
+
+  **`ALL_PARSETS` is now `DC3Par.reachable()`** rather than `dc3par.__all__`, via a new `ParSet`
+  classmethod. This is the better definition, not just a replacement: it enumerates exactly the
+  sets a run can be configured with, which is what `default_key` and `card_prefix` uniqueness must
+  hold over. Its inverse, `test_every_parset_is_reachable_from_the_top`, now walks the package with
+  `pkgutil` and imports every module first — `__subclasses__` reports only classes that have been
+  *defined*, so without that a set would escape every check simply because nothing imported its
+  module, which co-location makes easy to arrange by accident.
+
+  **Moved now:** `TemplateLibraryPar` and `TemplatePar`, the only two whose module exists. Seven
+  remain in `dc3par.py` (`ConvolvePar`, `CorrelatePar`, `MaskPar` → Phase 3; `WindowPar`,
+  `ContinuumPar`, `FitPar`, `QAPar` → Phase 4) and move as each phase lands. The transitional
+  inconsistency is the acknowledged cost, and it is visible rather than subtle: `dc3par.py` shrinks
+  as the port proceeds. Doing it incrementally rather than deferring matters because a parameter
+  set's import path is public API — declaring `FitPar` in `fit.py` on day one is free, moving it
+  after Phase 4 has been built against `dc3.par.dc3par.FitPar` is not.
+
+  **`DC3Par`'s own home is not settled.** It sits in `dc3par.py` because that is where it already
+  was, but the same mantra applies to it: the aggregate configures the full workflow, so it belongs
+  beside the class that executes it (Phase 4's `DC3Fit`). Deferred until that class exists rather
+  than guessed at now, and noted in `CLAUDE.md` so the current location is not mistaken for a
+  decision.
