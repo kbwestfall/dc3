@@ -58,6 +58,22 @@ the *same* instrument usually cannot, and must accept a floor.  The code tracks
 the sign, reports it, and warns when it is negative -- it never silently returns
 :math:`\sigma = 0`.
 
+When matching does not happen
+-----------------------------
+
+Matching needs both resolution vectors.  If either the templates or the galaxy
+carry none, there is nothing to match, and preparation proceeds without it: the
+templates are used at their native resolution and ``dvar_inst`` is zero.  That
+zero is a *statement of ignorance*, not a measurement of equality, so a warning
+says the reported dispersions are uncorrected for any resolution difference.
+:meth:`ResolutionMatch.identity` represents the case, and
+:attr:`ResolutionMatch.performed` distinguishes it from a genuine match that
+happened to leave no offset.
+
+There is deliberately no switch to decline matching when both vectors *are*
+available.  An unmatched, wavelength-dependent resolution difference cannot be
+represented by the single scalar dispersion of the forward model.
+
 How this differs from ``mangadap``
 ----------------------------------
 
@@ -105,7 +121,7 @@ import warnings
 import numpy as np
 from ppxf import ppxf_util
 
-from ..pkg.exceptions import DC3ResolutionError
+from ..pkg.exceptions import DC3CodingError, DC3ResolutionError
 from .velocity import SPEED_OF_LIGHT
 
 
@@ -246,9 +262,10 @@ class ResolutionMatch:
 
     Parameters
     ----------
-    kernel_sigma : :class:`numpy.ndarray`
+    kernel_sigma : :class:`numpy.ndarray`, None
         Dispersion of the Gaussian convolution kernel at each pixel, in km/s.
-        Real and positive everywhere by construction.
+        Real and positive everywhere by construction.  None if no matching was
+        performed; see :meth:`not_performed`.
     dvar_inst : float
         The signed instrumental variance left after matching, in
         :math:`({\rm km/s})^2`.  See the module documentation.
@@ -262,7 +279,7 @@ class ResolutionMatch:
 
     Attributes
     ----------
-    kernel_sigma : :class:`numpy.ndarray`
+    kernel_sigma : :class:`numpy.ndarray`, None
         As above.
     dvar_inst : float
         As above.
@@ -281,10 +298,52 @@ class ResolutionMatch:
         self.velscale = float(velscale)
         self.epsilon_sigma = float(epsilon_sigma)
 
+    @classmethod
+    def identity(cls, npix, velscale, epsilon_sigma=VARSMOOTH_MIN_SIG):
+        """
+        Represent a preparation in which no resolution matching was done.
+
+        The identity preparation: the spectra are left at their native
+        resolution.  Used when either resolution vector is missing.  There is
+        no kernel, the offset is zero, and no pixel is flagged as unmatched --
+        nothing was attempted, so nothing failed.
+
+        Parameters
+        ----------
+        npix : int
+            Number of pixels in the spectra that were not matched.
+        velscale : float
+            Velocity scale of their grid, in km/s per pixel.
+        epsilon_sigma : float, optional
+            Recorded for provenance only; it had no effect.
+
+        Returns
+        -------
+        ResolutionMatch
+            A match with :attr:`performed` False and ``dvar_inst`` zero.
+        """
+        return cls(None, 0.0, np.zeros(npix, dtype=bool), velscale, epsilon_sigma)
+
+    @property
+    def performed(self):
+        """
+        Whether resolution matching was actually done.
+
+        Distinguishes a zero ``dvar_inst`` that was *measured* from one that is
+        zero only because there was nothing to match.  The two mean different
+        things for a reported dispersion: the first is corrected, the second is
+        not.
+        """
+        return self.kernel_sigma is not None
+
     @property
     def kernel_sigma_pixels(self):
-        """The kernel dispersion in pixels, which is what ``varsmooth`` clips."""
-        return self.kernel_sigma / self.velscale
+        """
+        The kernel dispersion in pixels, which is what ``varsmooth`` clips.
+
+        None if no matching was performed.
+        """
+        return None if self.kernel_sigma is None else self.kernel_sigma / self.velscale
 
     @property
     def sigma_floor(self):
@@ -328,6 +387,8 @@ class ResolutionMatch:
 
     def __repr__(self):
         """A short summary of the match."""
+        if not self.performed:
+            return f'<{type(self).__name__}: not performed, dvar_inst=0 (uncorrected)>'
         if self.dvar_inst > 0:
             sense = 'template at higher resolution'
         elif self.dvar_inst < 0:
@@ -506,7 +567,18 @@ def apply_kernel(loglam, flux, match, oversample=1):
     -------
     :class:`numpy.ndarray`
         The convolved spectrum, with the same shape as ``flux``.
+
+    Raises
+    ------
+    DC3CodingError
+        Raised if ``match`` records that no matching was performed.  There is
+        no kernel to apply, and the caller should have skipped this step.
     """
+    if not match.performed:
+        raise DC3CodingError(
+            'apply_kernel was called with a ResolutionMatch that was not performed; there is '
+            'no kernel to apply.  Check ResolutionMatch.performed before convolving.'
+        )
     # varsmooth needs the kernel in the units of the coordinate it is given.
     # On a log10 grid, d(log10 lambda) = dv / (c ln 10).
     sigma_loglam = match.kernel_sigma / (SPEED_OF_LIGHT * np.log(10.0))

@@ -115,3 +115,8 @@ Functionality/Performance Improvements and Additions
 
 - Added ``ParSet.reachable``, which collects every parameter set nested below a
   given one.
+
+- Template preparation no longer requires both resolution vectors. If the
+  templates or the galaxy carry no instrumental dispersion, resolution matching
+  is skipped with a warning and ``dvar_inst`` is zero. Added
+  ``ResolutionMatch.identity`` and ``ResolutionMatch.performed``.

@@ -17,7 +17,7 @@ import pytest
 
 from dc3.core import resolution, sampling
 from dc3.core.velocity import SPEED_OF_LIGHT
-from dc3.pkg.exceptions import DC3ResolutionError
+from dc3.pkg.exceptions import DC3CodingError, DC3ResolutionError
 
 
 LOG10LAM0 = np.log10(3800.0)
@@ -330,6 +330,54 @@ def test_astrophysical_variance_may_be_negative():
     match = resolution.match_resolution(np.full(NPIX, 10.0), np.full(NPIX, 40.0), VELSCALE)
     assert match.astrophysical_variance(1.0) < 0, \
         'A dispersion below the instrumental offset should give a negative variance'
+
+
+# ----------------------------------------------------------------------
+# The identity preparation
+# ----------------------------------------------------------------------
+def test_identity_records_that_no_matching_was_done():
+    """
+    The identity match has no kernel, no offset, and nothing unmatched.
+
+    ``performed`` is what separates it from a genuine match that happened to
+    leave no offset: both have ``dvar_inst = 0``, but only one is corrected.
+    """
+    identity = resolution.ResolutionMatch.identity(NPIX, VELSCALE)
+    assert not identity.performed, 'The identity match should report that it was not performed'
+    assert identity.dvar_inst == 0.0, 'The identity match should leave no offset'
+    assert identity.kernel_sigma is None, 'The identity match should carry no kernel'
+    assert identity.kernel_sigma_pixels is None, \
+        'The identity match should have no kernel in pixels either'
+    assert identity.n_unmatched == 0, 'Nothing was attempted, so nothing should be unmatched'
+    assert identity.sigma_floor == 0.0, 'The identity match should impose no floor'
+
+    matched = resolution.match_resolution(np.full(NPIX, 10.0), np.full(NPIX, 40.0), VELSCALE)
+    assert matched.performed, 'A computed match should report that it was performed'
+
+
+def test_identity_leaves_the_dispersion_uncorrected():
+    """With no offset, the astrophysical variance is just the fitted one squared."""
+    identity = resolution.ResolutionMatch.identity(NPIX, VELSCALE)
+    assert np.isclose(identity.astrophysical_variance(30.0), 900.0), \
+        'The identity match should apply no correction to the fitted dispersion'
+
+
+def test_identity_kernel_cannot_be_applied():
+    """
+    Applying the identity match is a coding error, not a no-op.
+
+    The caller is meant to skip Step 1 entirely.  Silently returning the input
+    would hide a call site that believes it convolved.
+    """
+    identity = resolution.ResolutionMatch.identity(NPIX, VELSCALE)
+    with pytest.raises(DC3CodingError, match='not performed'):
+        resolution.apply_kernel(loglam(), np.ones(NPIX), identity)
+
+
+def test_identity_repr_says_uncorrected():
+    """The summary makes the absence of a correction visible."""
+    assert 'uncorrected' in repr(resolution.ResolutionMatch.identity(NPIX, VELSCALE)), \
+        'The identity match should describe itself as uncorrected'
 
 
 # ----------------------------------------------------------------------

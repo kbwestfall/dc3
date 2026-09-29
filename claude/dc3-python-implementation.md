@@ -5,7 +5,9 @@ what was verified, and — most importantly — **where the implementation depar
 why**. The plan says what should happen; this says what did.
 
 **Status:** Phase 0 complete. **Phase 1 complete** apart from the datamodel decision, which the
-plan defers to prototyping `dc3/results.py` in Phase 4. 188 tests passing.
+plan defers to prototyping `dc3/results.py` in Phase 4. **Phase 2 in progress**: every module is
+written, but library file I/O, the preparation-pipeline characterization and three smaller
+specified items remain (see Phase 2, "Remaining"). 355 tests passing.
 
 ---
 
@@ -64,7 +66,7 @@ is stated in full in the plan; this is the checklist.
 | Resolution matching is **preparation only** — never inside the cost function. | Phase 2 |
 | **No deconvolution**, anywhere. | Phase 2 |
 | Template preparation runs **once per execution**, never per spectrum. | Phase 2 |
-| `sres` vectors are **pre-pixelized** on input. The code cannot check this; document it everywhere a user will look. | Phase 2 |
+| `idsp` vectors are **pre-pixelized** on input. The code cannot check this; document it everywhere a user will look. | Phase 2 |
 | Templates are treated as **noise-free**; only the galaxy carries errors. | Phase 2, science question 4 |
 | **Never vendor, copy or adapt `ppxf` source.** Import it. A clean-room reimplementation must be written from the papers. | External dependencies, Phase 3 |
 | Config keys map **1:1** to in-code parameters. No renaming, no derived keys. | Phase 1 |
@@ -104,7 +106,7 @@ environment named `dc3` would collide with the `dc3/` package directory.
 
 ## Phase 1 — Package infrastructure
 
-🔵 **In progress.**
+✅ **Complete**, apart from the datamodel decision (see "Open questions carried forward").
 
 ### `dc3/pkg/` — ✅ complete (commit `94aeb32`)
 
@@ -157,10 +159,10 @@ way**, so it stopped being a differentiator, and pydantic's stricter validation 
 
 Two consequences carry into `funcpar.py`:
 
-- **The `doc_url` attribute is load-bearing, not a nicety.** For a ppxf-wrapping `FuncPar` the
+- **The `api_doc` attribute is load-bearing, not a nicety.** For a ppxf-wrapping `FuncPar` the
   upstream documentation is the *only* information a user gets — no type, no options, no
-  description. `doc_url` is already on the base class, and both `to_rst_table` and the TOML
-  emitter surface it.
+  description. `api_doc` is on the base class, and both `to_rst_table` and the TOML emitter
+  surface it. (It was introduced as `doc_url`; see the `funcpar.py` section for the rename.)
 - **`losvd_rfft` cannot be wrapped by `FuncPar` at all.** Its signature is entirely positional
   (`pars, nspec, moments, nl, ncomp, vsyst, factor, sigma_diff` — zero keyword arguments), and
   `FuncPar` captures only keywords with defaults. It needs a hand-written `ParSet` or a direct
@@ -220,8 +222,14 @@ discoverable, still valid TOML, and it round-trips as unset.
 
 ### `dc3/par/dc3par.py` — ✅ complete
 
-Nine parameter sets, all nested in `DC3Par`, all hand-written (they are `dc3`'s vocabulary, not a
-dependency's). 32 tests.
+Written as nine parameter sets, all nested in `DC3Par`, all hand-written (they are `dc3`'s
+vocabulary, not a dependency's). 32 tests at the time.
+
+**Since superseded in two ways.** A tenth set, `TemplateLibraryPar`, was split out of
+`TemplatePar`; and parameter sets are now declared beside the code they configure, so
+`TemplateLibraryPar` and `TemplatePar` live in `dc3/templates.py`. `dc3par.py` now holds `DC3Par`
+and the seven sets whose modules are not yet written, each of which moves out as its phase lands.
+Both changes are recorded in the change log (2026-09-17) and in the deviations table.
 
 **Hardwired C++ constants now exposed**, which is the point of the exercise — several are flagged
 "NEED TO REVISIT" in `doc/develop.txt` and cannot be revisited while compiled in:
@@ -335,13 +343,13 @@ the answer turns out to be "parameters live only in the configuration file", the
 collapses to reading the file, and `resolve_par` reduces to `from_toml` with no call sites
 changed.
 
-**But it is already concrete**, because `dc3par.py` contains four path-like parameters that sit
+**But it is already concrete**, because the parameter sets contain path-like parameters that sit
 exactly on this line:
 
 | Parameter | Nature |
 |---|---|
 | `DC3Par.output_dir` | changes every run — reads as a command-line operand |
-| `TemplatePar.library` | the user's example of something that should be **config-only** |
+| `TemplateLibraryPar` (the whole set, e.g. `file_search`) | the user's example of something that should be **config-only** |
 | `MaskPar.regions` | a file path, but one that changes with the science rather than the run |
 | `FitPar.constraints` | a file path, tied to a particular set of spectra |
 
@@ -384,9 +392,10 @@ Noted in the module's `todo`. Only this class and the ingest functions would cha
 
 ### Whether the relativistic velocity conversions should exist at all
 
-⬜ **Unresolved. Raised by the user while `dc3/core/sampling.py` was being written.**
+⬜ **Unresolved. Raised by the user while `dc3/core/sampling.py` was being written**, before the
+velocity conversions were split out of it.
 
-`sampling.py` provides three named velocity conversions — `log_velocity` (c ln(1+z), the internal
+`dc3/core/velocity.py` provides three named velocity conversions — `log_velocity` (c ln(1+z), the internal
 convention), `relativistic_velocity`, and `classical_velocity` — because the original C++ carried
 an unresolved to-do about exactly this confusion.
 
@@ -478,7 +487,8 @@ boundary and not touched again inside the fit. 23 tests.
   cross-correlation function depend on how much was masked, coupling the kinematics to the
   masking. Tested against the unmasked case so the assertion is discriminating.
 - **Unusable values are detected, not trusted to the caller.** A non-finite flux, a non-positive
-  inverse variance and a non-positive `sres` are flagged on construction whatever the input mask
+  inverse variance and a non-positive `idsp` (then named `sres`; see the `resolution.py` section)
+  are flagged on construction whatever the input mask
   says.
 - `SpectrumBitMask` declares seven bits, including `UNMATCHED` for the resolution work to come.
 
@@ -568,9 +578,10 @@ The two-step pipeline, with `dvar_inst` carried out as a first-class result. 24 
 **Scope, agreed with the user.** Reading raw library files from disk is *not* implemented. The
 plan puts file I/O at the `specutils` boundary, which is not written, so a reader built now would
 be designed against an interface that does not exist and likely rewritten when it does. Also
-deferred: the library-definition config, air→vacuum on ingest, and the on-disk cache of the
-prepared product — the last because the datamodel decision is still open and governs how `dc3`
-writes FITS.
+deferred: air→vacuum on ingest, and the on-disk cache of the prepared product — the latter
+because the datamodel decision is still open and governs how `dc3` writes FITS. The
+library-definition config, originally deferred too, now exists as `TemplateLibraryPar`, though
+the reader that would consume it does not.
 
 **Both classes subclass `Spectra`**, at the user's suggestion, rather than wrapping one. A
 `TemplateLibrary` *is* a set of spectra with a name and stricter validation; `PreparedTemplates`
@@ -592,14 +603,43 @@ converts a fitted dispersion using exactly that offset, so if the prepared resol
 anything else, every reported dispersion would be wrong.
 
 **Two judgement calls worth flagging.** The fiducial defaults to the **median** across the set,
-with `max`/`min` available; it is not yet a parameter, and may want to become one. And where
-templates extend beyond the galaxy's wavelength range — which is normal — the fiducial is held at
-its nearest measured value rather than extrapolated, since a linear extrapolation of a resolution
-curve can go negative. A warning says so, because the matching there rests on an assumption.
+with `max`/`min` available; it has since become a parameter, `TemplatePar.fiducial_method`. And
+where templates extend beyond the galaxy's wavelength range — which is normal — the fiducial is
+held at its nearest measured value rather than extrapolated, since a linear extrapolation of a
+resolution curve can go negative. A warning says so, because the matching there rests on an
+assumption.
+
+**A missing resolution vector skips Step 1, as the plan specifies.** If either the templates or
+the galaxy carry no `idsp`, `prepare` warns that the reported dispersions are **uncorrected**,
+naming which input is missing, and proceeds: the templates are resampled at their native
+resolution and `dvar_inst` is zero. The first implementation raised instead, which was never a
+deliberate choice. Three details of the fix:
+
+- **`ResolutionMatch.identity` represents the case, with a `performed` property.** Both an
+  identity match and a genuine match that happened to leave no offset have `dvar_inst = 0`, but
+  only the second is corrected; `performed` is what tells them apart downstream. The constructor
+  was first named `not_performed`, renamed at the user's request since that reads as the negation
+  of the `performed` property rather than as a constructor.
+- **`apply_kernel` raises `DC3CodingError` on an identity match** rather than returning its input.
+  A silent no-op would hide a call site that believes it convolved.
+- **The cache key tags both branches**, so an unmatched preparation can never be served in place
+  of a matched one. Keys computed before this change are not reproduced, which costs nothing
+  since no cache exists yet.
 
 ### Remaining — ⬜ not started
 
-Library file I/O, at the `specutils` boundary.
+Compared against the plan's Phase 2 specification:
+
+| Item | Plan section |
+|---|---|
+| Library file I/O, at the `specutils` boundary | "Templates", "I/O boundary" |
+| The preparation-pipeline characterization: push lines of known width through Steps 1 and 2 and measure the effective `σ_T'(λ)` (verification item 9) | "Characterizing the pipeline" |
+| A warning when the resampled template is not Nyquist-sampled, advising a larger `velscale_ratio` | "Spectral resolution" |
+| Optional automatic selection of `velscale_ratio`, on the LSF-FWHM ≥ 2 px criterion | "`velscale_ratio` and the second bound on `δ`" |
+| The soft diagnostic for an `idsp` implying `σ_inst ≲ Δ/√12`, i.e. probably post-pixelized | "Input contract" |
+
+The two warnings the plan does require and that *are* in place, both in `resolution.py`: a
+negative `dvar_inst`, and template pixels that cannot reach the target resolution.
 
 ---
 
@@ -623,7 +663,7 @@ is a one-off.
 | 1 | `ParSet` built on pydantic v2, not ported from PypeIt | The plan allowed either, to be settled by prototyping. Settled in pydantic's favour; see above. | ⬜ not yet |
 | 1 | `validate_declaration` lives in the test suite, not on `ParSet` | No user input can violate it — it constrains how a parameter set is *written*, so it belongs with the tests that enforce it. Now `dc3.tests.test_parset.check_declaration`. | ⬜ not yet |
 | 1 | Added `DC3CodingError` | Not in the plan. Separates faults in `dc3` itself from faults in its use, so a user seeing one knows whether to report a bug or fix their input. | ⬜ not yet |
-| 1 | `FuncPar` gains `api_doc`, required on every subclass | Not in the plan, which specified only that `FuncPar` exists. Its generated descriptions carry no information, so the pointer upstream is the only documentation its parameters have. | ⬜ not yet |
+| 1 | `api_doc` on `ParSet`, not `FuncPar`, and required on every `FuncPar` | The plan proposed a documentation pointer on `FuncPar` only. It sits on the base class, defined generally, because its two uses are inside `ParSet`'s recursive `config_lines` and `to_rst_table`. Required on `FuncPar` because its generated descriptions carry no information, so the pointer upstream is the only documentation its parameters have. | ⬜ not yet |
 | 1 | `FuncPar` uses a metaclass, not `__init_subclass__` | Forced by pydantic: fields are collected from the class namespace during class creation, before `__init_subclass__` runs. Declaration syntax is unchanged. | ⬜ not yet |
 | 1 | `mvdiff`/`miter` sign-encodings split into explicit parameters | The plan said only to expose the hardwired constants. Encoding units and a mode in a number's sign makes a configuration unreadable without knowing the convention. | ⬜ not yet |
 | 1 | `WAVE1`, `DISP`, `dispaxis` dropped | The plan lists the 15 C++ keys as the basis for `dc3par`. These three name header keywords for WCS parsing, which `specutils`/`astropy.wcs` do at the I/O boundary; keeping them would contradict the Phase 2 boundary/internals split. | ⬜ not yet |
@@ -631,7 +671,9 @@ is a one-off.
 | 1 | `BitMaskArray` is not a `DataContainer` | PypeIt's is, which the plan notes couples its adoption to the datamodel decision. Keeping it a plain wrapper leaves that decision open. | ⬜ not yet |
 | 1 | `BitMask.validate_header` replaces `from_header` | Bits are class-declared here, so reconstructing a mask from a file is less useful than checking the file against the declaration and refusing on mismatch. | ⬜ not yet |
 | 2 | De-redshifting relabels the grid rather than rolling the arrays | The plan describes truncation at the ends and re-indexing the dispersion vector, which the rolling form requires. Relabelling achieves the same shift while discarding no pixels, and keeps flux and dispersion in correspondence with no work. | ⬜ not yet |
-
+| 1, 2 | Parameter sets declared beside the code they configure, not all in `dc3/par/dc3par.py` | The plan puts every set in `dc3par.py`, PypeIt's arrangement. That layout would force `import ppxf` into `dc3par.py` for any `FuncPar` wrapping a ppxf function, breaking the plan's own rule that ppxf imports stay in two modules. `dc3/par/__init__.py` exports the machinery only, since re-exporting a concrete set closes an import cycle. | ⬜ not yet |
+| 2 | `TemplateLibraryPar` split from `TemplatePar`; `fiducial_method` added | The plan has one `TemplatePar` with four parameters. What a library *is* and how it is *prepared* change independently, so they are separate sets. `fiducial_method` had been an argument of `prepare` with no configuration-file route, which broke the 1:1 rule. | ⬜ not yet |
+| 1, 2 | `ParSet.to_kwargs` and `document_parameters` | Not in the plan. A parameter set is expanded over the function it configures, and that function's docstring Parameters section is generated from it, so keywords, defaults and descriptions cannot drift. Agreement is checked by test. | ⬜ not yet |
 ---
 
 ## Verification status
@@ -958,3 +1000,25 @@ Tracks the fourteen verification items in the plan.
   beside the class that executes it (Phase 4's `DC3Fit`). Deferred until that class exists rather
   than guessed at now, and noted in `CLAUDE.md` so the current location is not mistaken for a
   decision.
+- **2026-09-29** — Brought the body of this document up to date with its own change log, after a
+  full re-read found sections not revised as later work landed. No decisions changed. Updated the
+  status line (Phase 2 in progress, 345 tests) and marked Phase 1 complete apart from the
+  datamodel. Corrected stale names: `doc_url` → `api_doc` in the `parset.py` section, `sres` →
+  `idsp` in the ground rules and the `spectra.py` section, `sampling.py` → `velocity.py` in the
+  relativistic-velocity question, and `TemplatePar.library` → `TemplateLibraryPar` in the
+  command-line question. Noted in the `dc3par.py` and `templates.py` sections that the
+  library-definition config, `fiducial_method`, and the parameter-set layout have since changed.
+  Expanded Phase 2's "Remaining" from library I/O alone to the five specified items still unbuilt.
+  Revised the `api_doc` deviation row, which described it as a `FuncPar` attribute, and added four
+  deviations not previously logged: the parameter-set layout, the `TemplateLibraryPar` split,
+  `to_kwargs` with `document_parameters`, and that a missing resolution vector raises rather than
+  proceeding with `dvar_inst = 0` as the plan specifies.
+- **2026-09-29** — **A missing resolution vector now warns and proceeds with `dvar_inst = 0`**, as
+  the plan specifies (355 tests in total), removing the deviation logged in the previous entry.
+  `TemplateLibrary` accepts templates without `idsp`; `prepare` skips Step 1 when either input
+  lacks one, warns that the reported dispersions are uncorrected and names the missing input, and
+  still resamples. Added `ResolutionMatch.identity` (renamed from `not_performed` at the user's
+  request) and a `performed` property, since an identity match and a genuine zero-offset match
+  share `dvar_inst = 0` but only one is corrected. `apply_kernel` refuses an identity match, and
+  the cache key tags matched and unmatched preparations so neither can stand in for the other.
+  Details in the `templates.py` section.

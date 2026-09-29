@@ -260,9 +260,13 @@ class TemplateLibrary(Spectra):
     A set of stellar templates sharing one logarithmic wavelength grid.
 
     A :class:`~dc3.spectra.Spectra` that additionally carries a name and
-    enforces the two things that make a set usable as templates.  Subclassing
-    rather than wrapping keeps ``library.flux``, ``library.wave`` and the rest
-    directly available, which is how the fitting machinery uses them.
+    enforces that the templates are noise-free.  Subclassing rather than
+    wrapping keeps ``library.flux``, ``library.wave`` and the rest directly
+    available, which is how the fitting machinery uses them.
+
+    A library without an instrumental dispersion is accepted.  It cannot be
+    resolution-matched, so :func:`prepare` uses it at its native resolution and
+    warns that the reported dispersions are uncorrected.
 
     Parameters
     ----------
@@ -281,18 +285,11 @@ class TemplateLibrary(Spectra):
     Raises
     ------
     DC3Error
-        Raised if the templates carry no instrumental dispersion, or if they
-        carry errors.
+        Raised if the templates carry errors.
     """
 
     def __init__(self, flux, log10lam0, dloglam, key='unnamed', **kwargs):
         super().__init__(flux, log10lam0, dloglam, **kwargs)
-        if self.idsp is None:
-            raise DC3Error(
-                'The templates carry no instrumental dispersion, so there is nothing to match '
-                'their resolution from.  Supply idsp, converting from a resolving power with '
-                'dc3.core.resolution.dispersion_from_resolving_power if necessary.'
-            )
         if self.ivar is not None:
             raise DC3Error(
                 'The templates carry errors.  Template spectra are treated as noise-free '
@@ -430,8 +427,11 @@ def preparation_key(
     ----------
     library_key : str
         Identifies the library.
-    fiducial_idsp : :class:`numpy.ndarray`
-        The fiducial galaxy resolution matched to.
+    fiducial_idsp : :class:`numpy.ndarray`, None
+        The fiducial galaxy resolution matched to, or None if no matching was
+        performed.  None gives a key distinct from every matched preparation,
+        so an unmatched product can never be served from the cache in place of
+        a matched one, or vice versa.
     velscale : float
         The galaxy's velocity scale, in km/s per pixel.
     velscale_ratio : int
@@ -450,9 +450,16 @@ def preparation_key(
     """
     digest = hashlib.sha256()
     digest.update(str(library_key).encode())
-    # The fiducial resolution is a vector, so it is hashed by content rather
-    # than by identity; two runs with numerically identical vectors share a key.
-    digest.update(np.ascontiguousarray(fiducial_idsp, dtype=float).tobytes())
+    # Each branch is tagged, so an unmatched preparation cannot share a key with
+    # a matched one.
+    if fiducial_idsp is None:
+        digest.update(b'unmatched')
+    else:
+        # The fiducial resolution is a vector, so it is hashed by content rather
+        # than by identity; two runs with numerically identical vectors share a
+        # key.
+        digest.update(b'matched')
+        digest.update(np.ascontiguousarray(fiducial_idsp, dtype=float).tobytes())
     for value in [velscale, velscale_ratio, epsilon_sigma, sigma_floor, oversample]:
         digest.update(repr(float(value)).encode())
     return digest.hexdigest()[:16]
@@ -523,17 +530,18 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
     Raises
     ------
     DC3Error
-        Raised if the galaxy carries no instrumental dispersion, or if the
-        templates and the galaxy do not overlap in wavelength.
+        Raised if the templates and the galaxy do not overlap in wavelength.
 
     Warns
     -----
     UserWarning
-        Issued if part of the template range falls outside the galaxy's, where
-        the fiducial resolution has to be held constant.
+        Issued if the templates or the galaxy carry no instrumental dispersion.
+        Step 1 is then skipped: the templates are resampled at their native
+        resolution, ``dvar_inst`` is zero, and the reported dispersions are
+        uncorrected for any difference in resolution.  Also issued if part of
+        the template range falls outside the galaxy's, where the fiducial
+        resolution has to be held constant.
     """
-    fiducial = galaxy.fiducial_resolution(method=fiducial_method)
-
     if library.wave[-1] < galaxy.wave[0] or library.wave[0] > galaxy.wave[-1]:
         raise DC3Error(
             f'The templates ({library.wave[0]:.1f}-{library.wave[-1]:.1f} A) and the galaxy '
@@ -542,26 +550,46 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
             'wavelength convention.'
         )
 
-    target, outside = _fiducial_on_template_grid(library.wave, galaxy.wave, fiducial)
-    if np.any(outside):
-        warnings.warn(
-            f'{np.sum(outside)} of {outside.size} template pixels fall outside the galaxy '
-            'wavelength range, where the fiducial resolution is held at its nearest measured '
-            'value.  The resolution matching there rests on that assumption rather than on a '
-            'measurement.'
-        )
-
     # --- Step 1: match the resolution on the templates' native grid ---------
-    match = resolution.match_resolution(
-        library.idsp[0], target, library.velscale,
-        epsilon_sigma=epsilon_sigma, sigma_floor=sigma_floor
-    )
-    matched_flux = np.atleast_2d(resolution.apply_kernel(
-        library.loglam, library.flux, match, oversample=varsmooth_oversample
-    ))
-    # By construction of the matching, the prepared resolution is the target
-    # offset by a constant; see dc3.core.resolution.
-    matched_idsp = np.sqrt(np.square(target) - match.dvar_inst)
+    if library.idsp is None or galaxy.idsp is None:
+        missing = [
+            name for name, spec in [('templates', library), ('galaxy spectra', galaxy)]
+            if spec.idsp is None
+        ]
+        warnings.warn(
+            f'The {" and the ".join(missing)} carry no instrumental dispersion, so resolution '
+            'matching is skipped: the templates are used at their native resolution and '
+            'dvar_inst is set to zero.  The reported dispersions are therefore UNCORRECTED for '
+            'any difference in resolution between the templates and the galaxy.'
+        )
+        # No fiducial was matched to, which the cache key must record.
+        fiducial = None
+        match = resolution.ResolutionMatch.identity(
+            library.npix, library.velscale, epsilon_sigma=epsilon_sigma
+        )
+        matched_flux = library.flux
+        # The templates keep whatever dispersion they carry, which may be none.
+        matched_idsp = None if library.idsp is None else library.idsp[0]
+    else:
+        fiducial = galaxy.fiducial_resolution(method=fiducial_method)
+        target, outside = _fiducial_on_template_grid(library.wave, galaxy.wave, fiducial)
+        if np.any(outside):
+            warnings.warn(
+                f'{np.sum(outside)} of {outside.size} template pixels fall outside the galaxy '
+                'wavelength range, where the fiducial resolution is held at its nearest '
+                'measured value.  The resolution matching there rests on that assumption '
+                'rather than on a measurement.'
+            )
+        match = resolution.match_resolution(
+            library.idsp[0], target, library.velscale,
+            epsilon_sigma=epsilon_sigma, sigma_floor=sigma_floor
+        )
+        matched_flux = np.atleast_2d(resolution.apply_kernel(
+            library.loglam, library.flux, match, oversample=varsmooth_oversample
+        ))
+        # By construction of the matching, the prepared resolution is the target
+        # offset by a constant; see dc3.core.resolution.
+        matched_idsp = np.sqrt(np.square(target) - match.dvar_inst)
 
     # --- Step 2: resample onto the galaxy's sampling -----------------------
     resampled = sampling.Resample(
@@ -573,7 +601,10 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
 
     # The instrumental dispersion is a property of each wavelength, not an
     # integrated quantity, so it is interpolated rather than resampled.
-    out_idsp = np.interp(resampled.outx, library.wave, matched_idsp)
+    out_idsp = (
+        None if matched_idsp is None
+        else np.interp(resampled.outx, library.wave, matched_idsp)
+    )
 
     mask = SpectrumMask(out_flux.shape)
     # outf is the fraction of each output pixel covered by valid input, so a

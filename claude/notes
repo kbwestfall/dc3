@@ -455,5 +455,10 @@ I like your suggestion of a constraints table.  The table should be ascii so
 that is directly human readable and writable.  I prefer fixed-width columnated
 format to ecsv, but ecsv is preferred over FITS.
 
+# Random thoughts through implementation
 
-ParSet test checks both keyword, default value *and* docstring description.
+ - ParSet test checks both keyword, default value *and* docstring description.
+
+ - revisit allowing `kernel_sigma` to be `None` in `resolution.py:ResolutionMatch`.
+
+ - Adopt a src layout instead of a flat layout.

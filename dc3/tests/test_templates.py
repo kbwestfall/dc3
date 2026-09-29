@@ -20,17 +20,21 @@ GALAXY_NPIX = 400
 GALAXY_LOG10LAM0 = np.log10(4000.0)
 
 
-def make_galaxy(nspec=5, idsp_low=40.0, idsp_high=45.0):
+def make_galaxy(nspec=5, idsp_low=40.0, idsp_high=45.0, with_idsp=True):
     """A galaxy set spanning 4000-4040 A with a varying resolution."""
     return Spectra(
         np.ones((nspec, GALAXY_NPIX)), GALAXY_LOG10LAM0, GALAXY_DLOGLAM,
         ivar=np.full((nspec, GALAXY_NPIX), 100.0),
-        idsp=np.linspace(idsp_low, idsp_high, GALAXY_NPIX),
+        idsp=np.linspace(idsp_low, idsp_high, GALAXY_NPIX) if with_idsp else None,
     )
 
 
 def make_library(idsp=20.0, ntpl=2, wave_range=(3900.0, 4150.0), ratio=2):
-    """A library at finer sampling, spanning beyond the galaxy."""
+    """
+    A library at finer sampling, spanning beyond the galaxy.
+
+    ``idsp`` may be None for a library that carries no instrumental dispersion.
+    """
     dloglam = GALAXY_DLOGLAM / ratio
     log10lam0 = np.log10(wave_range[0])
     npix = int(np.ceil((np.log10(wave_range[1]) - log10lam0) / dloglam))
@@ -38,7 +42,8 @@ def make_library(idsp=20.0, ntpl=2, wave_range=(3900.0, 4150.0), ratio=2):
     one = 1.0 + 0.3 * np.sin((wave - wave[0]) / 7.0)
     flux = np.vstack([one * (1 + 0.1 * i) for i in range(ntpl)])
     return templates.TemplateLibrary(
-        flux, log10lam0, dloglam, key='TEST', idsp=np.full(npix, idsp)
+        flux, log10lam0, dloglam, key='TEST',
+        idsp=None if idsp is None else np.full(npix, idsp)
     )
 
 
@@ -85,15 +90,16 @@ def test_library_wavelength_limit_must_be_an_ordered_pair(wave_limit):
 # ----------------------------------------------------------------------
 # TemplateLibrary
 # ----------------------------------------------------------------------
-def test_library_requires_a_dispersion():
+def test_library_without_a_dispersion_is_accepted():
     """
-    Templates with no instrumental dispersion cannot be prepared.
+    Templates with no instrumental dispersion can still form a library.
 
-    There would be nothing to match their resolution *from*, so this is caught
-    at construction rather than producing a meaningless kernel later.
+    They cannot be resolution-matched, but that is handled by :func:`prepare`,
+    which warns and proceeds with ``dvar_inst = 0``; refusing them here would
+    make that path unreachable.
     """
-    with pytest.raises(DC3Error, match='no instrumental dispersion'):
-        templates.TemplateLibrary(np.ones((2, 100)), 3.6, 1e-5)
+    library = templates.TemplateLibrary(np.ones((2, 100)), 3.6, 1e-5)
+    assert library.idsp is None, 'A library built without idsp should carry none'
 
 
 def test_library_rejects_errors():
@@ -261,6 +267,71 @@ def test_library_is_not_modified():
 
 
 # ----------------------------------------------------------------------
+# When matching does not happen
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    'library_idsp,galaxy_idsp,named',
+    [
+        (None, True, 'templates'),
+        (20.0, False, 'galaxy spectra'),
+        (None, False, 'templates and the galaxy spectra'),
+    ],
+    ids=['no-template-idsp', 'no-galaxy-idsp', 'neither']
+)
+def test_missing_dispersion_warns_and_leaves_no_offset(library_idsp, galaxy_idsp, named):
+    """
+    Without both resolution vectors, preparation proceeds with ``dvar_inst = 0``.
+
+    The zero is a statement of ignorance rather than a measurement, so the
+    warning must say the reported dispersions are uncorrected, and name which
+    input is missing so the user knows what to supply.
+    """
+    library = make_library(idsp=library_idsp)
+    galaxy = make_galaxy(with_idsp=galaxy_idsp)
+    with pytest.warns(UserWarning, match='UNCORRECTED') as record:
+        prepared = templates.prepare(library, galaxy, **TemplatePar().to_kwargs())
+    assert any(named in str(w.message) for w in record), \
+        f'The warning does not name the {named} as the input lacking a dispersion'
+    assert prepared.dvar_inst == 0.0, 'An unmatched preparation should leave dvar_inst at zero'
+    assert not prepared.match.performed, \
+        'An unmatched preparation should record that no matching was performed'
+
+
+def test_unmatched_templates_are_resampled_but_not_convolved():
+    """
+    Step 1 is skipped entirely, but Step 2 still runs.
+
+    The templates must still land on the galaxy's sampling to be fit at all, so
+    the output is exactly what resampling the raw templates gives.
+    """
+    library = make_library(idsp=None)
+    galaxy = make_galaxy()
+    prepared = prepare_quietly(library, galaxy)
+    expected = sampling.Resample(
+        library.flux, x=library.wave, newRange=[library.wave[0], library.wave[-1]],
+        newdx=galaxy.dloglam, newLog=True
+    )
+    assert np.allclose(prepared.flux, np.atleast_2d(expected.outy)), \
+        'Unmatched templates should be resampled without any convolution'
+
+
+def test_unmatched_preparation_carries_the_template_dispersion_if_any():
+    """
+    The prepared dispersion is the templates' own, when they have one.
+
+    With no matching the templates keep their native resolution, so that is
+    what the prepared set should report -- and nothing, if they had none.
+    """
+    with_template_idsp = prepare_quietly(make_library(idsp=20.0), make_galaxy(with_idsp=False))
+    assert np.allclose(with_template_idsp.idsp, 20.0), \
+        'Unmatched templates should keep their own instrumental dispersion'
+
+    without = prepare_quietly(make_library(idsp=None), make_galaxy())
+    assert without.idsp is None, \
+        'Templates with no dispersion should give a prepared set with none'
+
+
+# ----------------------------------------------------------------------
 # The cache key
 # ----------------------------------------------------------------------
 def test_key_is_stable_for_identical_input():
@@ -308,6 +379,22 @@ def test_key_changes_with_the_fiducial_resolution():
     changed = dict(base, fiducial_idsp=np.full(10, 41.0))
     assert templates.preparation_key(**base) != templates.preparation_key(**changed), \
         'A different fiducial resolution should give a different key'
+
+
+def test_key_distinguishes_an_unmatched_preparation():
+    """
+    An unmatched preparation never shares a key with a matched one.
+
+    Otherwise a cache could serve templates at their native resolution where
+    matched ones were expected, and every corrected dispersion would be wrong.
+    """
+    base = dict(
+        library_key='TEST', fiducial_idsp=np.full(10, 40.0), velscale=7.5, velscale_ratio=1,
+        epsilon_sigma=0.1, sigma_floor=0.0, oversample=1,
+    )
+    unmatched = dict(base, fiducial_idsp=None)
+    assert templates.preparation_key(**base) != templates.preparation_key(**unmatched), \
+        'An unmatched preparation should not share a key with a matched one'
 
 
 # ----------------------------------------------------------------------
