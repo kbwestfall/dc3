@@ -89,6 +89,10 @@ These are easy to violate accidentally and expensive to unpick.
   by a leading underscore if it is not part of the interface. The exception is
   test code, where a closure over the fixture under test is often the clearest
   way to express a check.
+- **Keep module-level globals to a minimum.** Do not define a global constant
+  unless (1) it is used in many different functions, or (2) it is in test
+  code. Otherwise compute the value where it is used and explain it in that
+  function's docstring.
 - **Imports go at the top of the file.** The one exception is a script: the
   imports a `ScriptBase` subclass needs belong inside its `main`, because every
   registered entry point is imported when the console scripts are resolved, so

@@ -69,7 +69,7 @@ import warnings
 from typing import Annotated, Literal
 
 import numpy as np
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .core import resolution, sampling
 # NOTE: dc3.par.parset only -- never dc3.par.dc3par, and never the dc3.par
@@ -210,11 +210,13 @@ class TemplatePar(ParSet):
     api_doc = ':class:`~dc3.templates.TemplatePar`'
     default_comment = 'Template preparation, run once per execution.'
 
-    velscale_ratio: Annotated[int, Field(
-        default=1, ge=1,
+    velscale_ratio: Annotated[int | Literal['auto'], Field(
+        default=1,
         description='Integer number of prepared-template pixels per galaxy pixel.  Oversampling '
                     'the template keeps its line-spread function Nyquist-sampled on its own '
-                    'grid, which relaxes one of the two bounds on the instrumental offset.'
+                    'grid, which relaxes one of the two bounds on the instrumental offset.  Use '
+                    '"auto" for the smallest ratio at which the FWHM of the prepared '
+                    'line-spread function spans at least two pixels at every wavelength.'
     )]
     epsilon_sigma: Annotated[float, Field(
         default=0.1, ge=0.1,
@@ -253,6 +255,34 @@ class TemplatePar(ParSet):
                     'highest resolution present and so makes dvar_inst most negative, "max" '
                     'the lowest and so most positive.'
     )]
+
+    @field_validator('velscale_ratio')
+    @classmethod
+    def _check_velscale_ratio(cls, value):
+        """
+        Check that an explicit ``velscale_ratio`` is at least one.
+
+        A ``ge`` constraint cannot be attached to a field that also admits
+        ``'auto'``, so the bound is checked here.
+
+        Parameters
+        ----------
+        value : int, str
+            The value to check.
+
+        Returns
+        -------
+        int, str
+            The value, unchanged.
+
+        Raises
+        ------
+        ValueError
+            Raised if an integer ratio is less than one.
+        """
+        if value != 'auto' and value < 1:
+            raise ValueError(f'velscale_ratio must be at least 1, or "auto"; got {value}.')
+        return value
 
 
 class TemplateLibrary(Spectra):
@@ -535,12 +565,21 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
     Warns
     -----
     UserWarning
-        Issued if the templates or the galaxy carry no instrumental dispersion.
-        Step 1 is then skipped: the templates are resampled at their native
-        resolution, ``dvar_inst`` is zero, and the reported dispersions are
-        uncorrected for any difference in resolution.  Also issued if part of
-        the template range falls outside the galaxy's, where the fiducial
-        resolution has to be held constant.
+        Issued in any of these cases:
+
+        - The templates or the galaxy carry no instrumental dispersion.  Step 1
+          is then skipped: the templates are resampled at their native
+          resolution, ``dvar_inst`` is zero, and the reported dispersions are
+          uncorrected for any difference in resolution.
+        - A supplied dispersion is smaller than pixel integration alone would
+          produce, which most likely means the vector is wrong; see
+          :func:`~dc3.core.resolution.check_pixelization`.
+        - Part of the template range falls outside the galaxy's, where the
+          fiducial resolution has to be held constant.
+        - An explicit ``velscale_ratio`` leaves the prepared templates
+          undersampled; see :func:`~dc3.core.resolution.minimum_velscale_ratio`.
+        - ``velscale_ratio`` is ``'auto'`` but the templates carry no
+          dispersion to choose it from, in which case a ratio of 1 is used.
     """
     if library.wave[-1] < galaxy.wave[0] or library.wave[0] > galaxy.wave[-1]:
         raise DC3Error(
@@ -549,6 +588,13 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
             'Check that the galaxy has been de-redshifted and that the two use the same '
             'wavelength convention.'
         )
+
+    # Soft diagnostics on the supplied dispersions, each against its own
+    # sampling, since that is the pixel whose integration sets the bound.
+    if library.idsp is not None:
+        resolution.check_pixelization(library.idsp, library.velscale, label='templates')
+    if galaxy.idsp is not None:
+        resolution.check_pixelization(galaxy.idsp, galaxy.velscale, label='galaxy spectra')
 
     # --- Step 1: match the resolution on the templates' native grid ---------
     if library.idsp is None or galaxy.idsp is None:
@@ -591,10 +637,34 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
         # offset by a constant; see dc3.core.resolution.
         matched_idsp = np.sqrt(np.square(target) - match.dvar_inst)
 
+    # --- Choose the output sampling, and check it --------------------------
+    # The line-spread function the output grid must carry is the one Step 1
+    # produced, so this is decided only once Step 1 has run.
+    if velscale_ratio == 'auto':
+        if matched_idsp is None:
+            warnings.warn(
+                'velscale_ratio = "auto" needs the instrumental dispersion of the templates, '
+                'which they do not carry.  Using a ratio of 1.'
+            )
+            _velscale_ratio = 1
+        else:
+            _velscale_ratio = resolution.minimum_velscale_ratio(matched_idsp, galaxy.velscale)
+    else:
+        _velscale_ratio = velscale_ratio
+        if matched_idsp is not None:
+            needed = resolution.minimum_velscale_ratio(matched_idsp, galaxy.velscale)
+            if _velscale_ratio < needed:
+                warnings.warn(
+                    f'At velscale_ratio = {_velscale_ratio} the prepared templates are not '
+                    'Nyquist-sampled: the FWHM of their line-spread function spans fewer than '
+                    'two pixels somewhere in the range, so resampling degrades their '
+                    f'effective resolution.  Use velscale_ratio = {needed} or more, or "auto".'
+                )
+
     # --- Step 2: resample onto the galaxy's sampling -----------------------
     resampled = sampling.Resample(
         matched_flux, x=library.wave, newRange=[library.wave[0], library.wave[-1]],
-        newdx=galaxy.dloglam / velscale_ratio, newLog=True
+        newdx=galaxy.dloglam / _velscale_ratio, newLog=True
     )
     out_flux = np.atleast_2d(resampled.outy)
     log10lam0, dloglam = sampling.grid_from_wave(resampled.outx)
@@ -615,9 +685,9 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
         mask.turn_on('UNMATCHED', select=np.broadcast_to(unmatched, out_flux.shape))
 
     return PreparedTemplates(
-        out_flux, log10lam0, dloglam, match=match, velscale_ratio=velscale_ratio,
+        out_flux, log10lam0, dloglam, match=match, velscale_ratio=_velscale_ratio,
         key=preparation_key(
-            library.key, fiducial, galaxy.velscale, velscale_ratio, epsilon_sigma,
+            library.key, fiducial, galaxy.velscale, _velscale_ratio, epsilon_sigma,
             sigma_floor, varsmooth_oversample
         ),
         mask=mask, idsp=out_idsp,

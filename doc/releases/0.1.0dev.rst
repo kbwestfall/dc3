@@ -120,3 +120,12 @@ Functionality/Performance Improvements and Additions
   templates or the galaxy carry no instrumental dispersion, resolution matching
   is skipped with a warning and ``dvar_inst`` is zero. Added
   ``ResolutionMatch.identity`` and ``ResolutionMatch.performed``.
+
+- ``TemplatePar.velscale_ratio`` accepts ``'auto'``, which selects the smallest
+  ratio that keeps the prepared templates Nyquist-sampled. An explicit ratio
+  that leaves them undersampled issues a warning. Added
+  ``dc3.core.resolution.minimum_velscale_ratio``.
+
+- Template preparation warns if a supplied instrumental dispersion is smaller
+  than pixel integration alone would produce. Added
+  ``dc3.core.resolution.check_pixelization``.

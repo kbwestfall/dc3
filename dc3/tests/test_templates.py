@@ -9,7 +9,7 @@ from pydantic import ValidationError
 import pytest
 
 from dc3 import templates
-from dc3.core import sampling
+from dc3.core import resolution, sampling
 from dc3.pkg.exceptions import DC3Error
 from dc3.spectra import Spectra
 from dc3.templates import TemplateLibraryPar, TemplatePar
@@ -75,6 +75,31 @@ def test_epsilon_sigma_floor_matches_varsmooth():
         'epsilon_sigma default does not match the upstream varsmooth clip of 0.1 px'
     with pytest.raises(ValidationError):
         TemplatePar(epsilon_sigma=0.05)
+
+
+def test_velscale_ratio_accepts_an_integer_or_auto():
+    """The ratio is a positive integer, or 'auto'; nothing else."""
+    assert TemplatePar(velscale_ratio='auto').velscale_ratio == 'auto', \
+        'velscale_ratio should accept "auto"'
+    assert TemplatePar(velscale_ratio=3).velscale_ratio == 3, \
+        'velscale_ratio should accept a positive integer'
+    for bad in [0, -1, 'other']:
+        with pytest.raises(ValidationError):
+            TemplatePar(velscale_ratio=bad)
+
+
+@pytest.mark.parametrize('value', ['auto', 3])
+def test_velscale_ratio_survives_a_configuration_file(value, tmp_path):
+    """
+    Both forms of velscale_ratio can be set from TOML.
+
+    This is why automatic selection is spelled 'auto' rather than None: TOML
+    has no null, so a None-valued setting could never be written in a file.
+    """
+    path = tmp_path / 'template.toml'
+    path.write_text(TemplatePar(velscale_ratio=value).to_toml())
+    assert TemplatePar.from_toml(path).velscale_ratio == value, \
+        f'velscale_ratio = {value!r} did not survive a round trip through TOML'
 
 
 @pytest.mark.parametrize(
@@ -329,6 +354,107 @@ def test_unmatched_preparation_carries_the_template_dispersion_if_any():
     without = prepare_quietly(make_library(idsp=None), make_galaxy())
     assert without.idsp is None, \
         'Templates with no dispersion should give a prepared set with none'
+
+
+# ----------------------------------------------------------------------
+# Output sampling and input diagnostics
+# ----------------------------------------------------------------------
+def narrow_lsf_setup():
+    """
+    Templates whose prepared line-spread function is too narrow for ratio 1.
+
+    With the templates at 3 km/s and the galaxy just above, the prepared
+    dispersion is about 3 km/s against a galaxy pixel of about 7.5 km/s, so a
+    FWHM of two pixels needs a ratio of 3.
+    """
+    return make_library(idsp=3.0, ratio=4), make_galaxy(idsp_low=4.0, idsp_high=5.0)
+
+
+def warning_messages(library, galaxy, par):
+    """Run the pipeline and return every warning message it issued."""
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter('always')
+        prepared = templates.prepare(library, galaxy, **par.to_kwargs())
+    return prepared, [str(w.message) for w in record]
+
+
+def test_auto_velscale_ratio_chooses_the_smallest_nyquist_ratio():
+    """
+    'auto' gives the smallest ratio that puts two pixels across the FWHM.
+
+    The expectation is computed from the prepared dispersion directly, so this
+    checks the pipeline applies the criterion to the right line-spread
+    function -- the one Step 1 produced, not the templates' native one.
+    """
+    library, galaxy = narrow_lsf_setup()
+    prepared = prepare_quietly(library, galaxy, TemplatePar(velscale_ratio='auto'))
+    sigma_min = 2.0 / resolution.SIGMA_TO_FWHM
+    expected = int(np.ceil(sigma_min * galaxy.velscale / np.amin(prepared.idsp)))
+    assert expected > 1, 'This test needs a configuration that requires oversampling'
+    assert prepared.velscale_ratio == expected, \
+        f'"auto" chose a ratio of {prepared.velscale_ratio}, not the minimum of {expected}'
+    assert np.isclose(prepared.velscale, galaxy.velscale / expected), \
+        'The prepared sampling does not follow from the chosen ratio'
+
+
+def test_undersampled_velscale_ratio_warns_with_the_needed_value():
+    """
+    An explicit ratio too small to sample the prepared LSF warns, naming a fix.
+
+    A ratio that is large enough must not warn, so the test is discriminating.
+    """
+    library, galaxy = narrow_lsf_setup()
+    needed = prepare_quietly(library, galaxy, TemplatePar(velscale_ratio='auto')).velscale_ratio
+
+    _, messages = warning_messages(library, galaxy, TemplatePar(velscale_ratio=1))
+    nyquist = [m for m in messages if 'not Nyquist-sampled' in m]
+    assert len(nyquist) == 1, 'An undersampling ratio should issue exactly one Nyquist warning'
+    assert f'velscale_ratio = {needed}' in nyquist[0], \
+        'The Nyquist warning should name the ratio that would suffice'
+
+    _, messages = warning_messages(library, galaxy, TemplatePar(velscale_ratio=needed))
+    assert not any('not Nyquist-sampled' in m for m in messages), \
+        'A sufficient ratio should not issue a Nyquist warning'
+
+
+def test_auto_velscale_ratio_without_a_template_dispersion_falls_back_to_one():
+    """With no dispersion to choose from, 'auto' uses 1 and says so."""
+    _, messages = warning_messages(
+        make_library(idsp=None), make_galaxy(), TemplatePar(velscale_ratio='auto')
+    )
+    assert any('Using a ratio of 1' in m for m in messages), \
+        '"auto" with no template dispersion should warn that it fell back to 1'
+
+
+def test_default_setup_raises_no_sampling_warnings():
+    """
+    The ordinary configuration triggers neither new diagnostic.
+
+    Otherwise the warnings would fire on every well-formed run and be ignored.
+    """
+    _, messages = warning_messages(make_library(), make_galaxy(), TemplatePar())
+    assert not any('not Nyquist-sampled' in m for m in messages), \
+        'A well-sampled preparation should not issue a Nyquist warning'
+    assert not any('pixel integration' in m for m in messages), \
+        'Plausible dispersions should not issue a pixelization warning'
+
+
+@pytest.mark.parametrize('which', ['templates', 'galaxy spectra'])
+def test_implausibly_small_dispersion_warns(which):
+    """
+    A dispersion below what pixel integration gives is flagged, on either input.
+
+    Each input is checked against its own sampling, so the test gives each a
+    value that is below its own bound but not the other's.
+    """
+    if which == 'templates':
+        library, galaxy = make_library(idsp=0.1), make_galaxy()
+    else:
+        library, galaxy = make_library(), make_galaxy(idsp_low=0.5, idsp_high=0.6)
+    _, messages = warning_messages(library, galaxy, TemplatePar())
+    flagged = [m for m in messages if 'pixel integration' in m]
+    assert len(flagged) == 1, f'An implausible {which} dispersion should be flagged once'
+    assert which in flagged[0], f'The warning should name the {which}'
 
 
 # ----------------------------------------------------------------------

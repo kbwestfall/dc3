@@ -426,6 +426,24 @@ def test_parameter_docstring_renders_numpy_style():
             'The rendered entry does not carry the declared description'
 
 
+def test_parameter_docstring_keeps_the_type_alongside_fixed_values():
+    """
+    A union of a type and fixed values renders both.
+
+    Rendering only the fixed values would document ``int | Literal['auto']`` as
+    accepting nothing but ``'auto'``, hiding the common case.
+    """
+    class _Mixed(ParSet):
+        ratio: Annotated[int | Literal['auto'], Field(default=1, description='A ratio.')]
+        mode: Annotated[Literal['a', 'b'] | None, Field(default=None, description='A mode.')]
+
+    lines = parameter_docstring(_Mixed)
+    assert "ratio : int or {'auto'}, optional" in lines, \
+        'A union of int and a fixed value should render as "int or {...}"'
+    assert "mode : {'a', 'b'}, optional" in lines, \
+        'None in a union should not be rendered as an alternative type'
+
+
 def test_document_parameters_fills_the_placeholder():
     """The placeholder is replaced, and the rest of the docstring is untouched."""
     @document_parameters(ExampleFitPar)

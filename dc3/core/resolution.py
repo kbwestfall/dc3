@@ -130,8 +130,10 @@ __all__ = [
     'VARSMOOTH_MIN_SIG',
     'ResolutionMatch',
     'apply_kernel',
+    'check_pixelization',
     'dispersion_from_resolving_power',
     'match_resolution',
+    'minimum_velscale_ratio',
     'resolving_power_from_dispersion',
 ]
 
@@ -250,6 +252,116 @@ def resolving_power_from_dispersion(dispersion):
     if np.any(_d <= 0):
         raise DC3ResolutionError('The instrumental dispersion must be positive.')
     return SPEED_OF_LIGHT / (SIGMA_TO_FWHM * _d)
+
+
+def minimum_velscale_ratio(idsp, velscale):
+    r"""
+    Return the smallest oversampling that keeps a line-spread function Nyquist-sampled.
+
+    **The criterion** is that the FWHM of the line-spread function spans at
+    least two pixels.  For a Gaussian that is a dispersion of
+
+    .. math::
+
+        \sigma_{\rm min} = \frac{2}{\sqrt{8\ln 2}} \approx 0.849\ {\rm pixels}.
+
+    A prepared template of instrumental dispersion :math:`\sigma(\lambda)`,
+    resampled onto a grid of :math:`\Delta v/r` km/s per pixel, meets it
+    wherever :math:`\sigma r/\Delta v \geq \sigma_{\rm min}`.  This returns the
+    smallest integer :math:`r \geq 1` for which that holds at *every*
+    wavelength, since the criterion has to be met where the line-spread
+    function is narrowest.
+
+    This is numerically the same threshold as the sub-Nyquist convolution
+    floor, ``ConvolvePar.min_sigma = 0.85``, below which the broadening kernel
+    is block-replicated.  That is not a coincidence: it is one criterion applied
+    to two different objects, the prepared template here and the fitted
+    broadening function there.
+
+    Parameters
+    ----------
+    idsp : :class:`numpy.ndarray`
+        The instrumental dispersion of the prepared template, in km/s.
+    velscale : float
+        The velocity scale of the galaxy spectra, in km/s per pixel.
+
+    Returns
+    -------
+    int
+        The smallest ``velscale_ratio`` meeting the criterion.
+
+    Raises
+    ------
+    DC3ResolutionError
+        Raised if the dispersion is not positive everywhere.
+    """
+    narrowest = np.amin(np.asarray(idsp, dtype=float))
+    if narrowest <= 0:
+        raise DC3ResolutionError('The instrumental dispersion must be positive.')
+    sigma_min = 2.0 / SIGMA_TO_FWHM
+    return max(1, int(np.ceil(sigma_min * velscale / narrowest)))
+
+
+def check_pixelization(idsp, velscale, label='spectra'):
+    r"""
+    Warn if an instrumental dispersion is smaller than pixelization alone would give.
+
+    A soft diagnostic, not a check: it warns and never fails.  The dispersion
+    vectors ``dc3`` is given are assumed to be **pre-pixelized**, describing the
+    line-spread function before integration over a pixel, and nothing in the
+    vector itself can confirm that.  What *can* be tested is a lower bound.
+
+    **The metric.**  Integrating over a pixel of width :math:`\Delta` convolves
+    the spectrum with a top-hat of that width, whose variance is
+
+    .. math::
+
+        \int_{-\Delta/2}^{+\Delta/2} \frac{x^2}{\Delta}\,dx = \frac{\Delta^2}{12},
+
+    so any dispersion measured *after* pixelization is at least
+    :math:`\Delta/\sqrt{12} \approx 0.289` pixels.  A supplied value below that
+    is therefore **not** a post-pixelized dispersion.  Nor is it a plausible
+    pre-pixelized one for a spectrum sampled well enough to measure kinematics
+    from.  It most likely means the vector is simply wrong, and the commonest
+    way to get there is a unit error: a dispersion in angstroms supplied where
+    km/s is expected is smaller by a factor of order :math:`c/\lambda \sim 60`.
+
+    .. note::
+
+        This cannot detect the error the pre-pixelized contract warns about --
+        a post-pixelized vector (MaNGA's ``DISP`` rather than ``PREDISP``)
+        supplied in its place.  That error makes the vector *larger*, by
+        :math:`\Delta^2/12` in quadrature, and no threshold on the vector alone
+        distinguishes it from a genuinely broader line-spread function.
+
+    Parameters
+    ----------
+    idsp : :class:`numpy.ndarray`
+        The instrumental dispersion, in km/s.
+    velscale : float
+        The velocity scale of the spectra it describes, in km/s per pixel.
+    label : str, optional
+        What the dispersion belongs to, for the warning message.
+
+    Returns
+    -------
+    bool
+        True if the dispersion is at least :math:`\Delta/\sqrt{12}` everywhere,
+        False if a warning was issued.
+    """
+    floor = velscale / np.sqrt(12.0)
+    below = np.asarray(idsp, dtype=float) < floor
+    if not np.any(below):
+        return True
+    warnings.warn(
+        f'The instrumental dispersion of the {label} falls below {floor:.2f} km/s, the '
+        f'dispersion that pixel integration alone produces at {velscale:.2f} km/s per pixel, '
+        f'in {np.sum(below)} of {below.size} pixels.  A dispersion that small is not '
+        'plausible for spectra sampled well enough to measure kinematics from, and most '
+        'likely indicates an error in the vector -- check in particular that it is in km/s '
+        'and not angstroms.'
+    )
+    return False
 
 
 class ResolutionMatch:

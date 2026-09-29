@@ -381,6 +381,64 @@ def test_identity_repr_says_uncorrected():
 
 
 # ----------------------------------------------------------------------
+# Sampling diagnostics
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize('sigma', [3.0, 6.0, 20.0, 50.0])
+def test_minimum_velscale_ratio_is_the_smallest_that_samples_the_fwhm(sigma):
+    """
+    The returned ratio puts two pixels across the FWHM, and one fewer does not.
+
+    Checking both sides is what makes this the *smallest* such ratio rather
+    than merely a sufficient one.
+    """
+    idsp = np.full(NPIX, sigma)
+    ratio = resolution.minimum_velscale_ratio(idsp, VELSCALE)
+    pixels_per_fwhm = sigma * resolution.SIGMA_TO_FWHM / (VELSCALE / ratio)
+    assert pixels_per_fwhm >= 2.0, \
+        f'At ratio {ratio} the FWHM spans {pixels_per_fwhm:.2f} pixels, fewer than two'
+    if ratio > 1:
+        coarser = sigma * resolution.SIGMA_TO_FWHM / (VELSCALE / (ratio - 1))
+        assert coarser < 2.0, f'Ratio {ratio - 1} already suffices, so {ratio} is not minimal'
+
+
+def test_minimum_velscale_ratio_is_set_by_the_narrowest_pixel():
+    """The criterion must hold everywhere, so the narrowest point decides."""
+    idsp = np.full(NPIX, 50.0)
+    idsp[NPIX // 2] = 3.0
+    assert resolution.minimum_velscale_ratio(idsp, VELSCALE) \
+        == resolution.minimum_velscale_ratio(np.full(NPIX, 3.0), VELSCALE), \
+        'The ratio should be set by the narrowest line-spread function in the range'
+
+
+def test_minimum_velscale_ratio_rejects_a_nonpositive_dispersion():
+    """A zero or negative dispersion has no sampling requirement to meet."""
+    with pytest.raises(DC3ResolutionError, match='must be positive'):
+        resolution.minimum_velscale_ratio(np.zeros(NPIX), VELSCALE)
+
+
+def test_check_pixelization_accepts_a_plausible_dispersion():
+    """A dispersion well above the pixel-integration bound passes silently."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        assert resolution.check_pixelization(np.full(NPIX, 30.0), VELSCALE), \
+            'A dispersion of several pixels should pass the check'
+
+
+def test_check_pixelization_warns_below_the_pixel_integration_bound():
+    """
+    A dispersion under Delta/sqrt(12) is flagged, and the likely cause named.
+
+    Pixel integration alone gives at least that much, so a smaller value is
+    most likely an error in the vector -- typically angstroms given as km/s.
+    """
+    idsp = np.full(NPIX, 30.0)
+    idsp[:10] = 0.9 * VELSCALE / np.sqrt(12.0)
+    with pytest.warns(UserWarning, match='angstroms'):
+        passed = resolution.check_pixelization(idsp, VELSCALE, label='test spectra')
+    assert not passed, 'The check should report failure when it warns'
+
+
+# ----------------------------------------------------------------------
 # Validation
 # ----------------------------------------------------------------------
 def test_mismatched_shapes_are_rejected():

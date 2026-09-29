@@ -6,8 +6,8 @@ why**. The plan says what should happen; this says what did.
 
 **Status:** Phase 0 complete. **Phase 1 complete** apart from the datamodel decision, which the
 plan defers to prototyping `dc3/results.py` in Phase 4. **Phase 2 in progress**: every module is
-written, but library file I/O, the preparation-pipeline characterization and three smaller
-specified items remain (see Phase 2, "Remaining"). 355 tests passing.
+written, but library file I/O and the preparation-pipeline characterization remain (see
+Phase 2, "Remaining"). 373 tests passing.
 
 ---
 
@@ -626,6 +626,39 @@ deliberate choice. Three details of the fix:
   of a matched one. Keys computed before this change are not reproduced, which costs nothing
   since no cache exists yet.
 
+**Output sampling: automatic `velscale_ratio` and the Nyquist warning.** Both rest on
+`resolution.minimum_velscale_ratio`, the smallest integer ratio at which the FWHM of the prepared
+line-spread function spans two pixels at every wavelength. Two points of design:
+
+- **Automatic selection is spelled `velscale_ratio = 'auto'`, not `None`.** TOML has no null, so a
+  None-valued setting could never be written in a configuration file, and the 1:1 rule requires
+  that it can. A `ge=1` constraint cannot attach to an `int | Literal['auto']` union, so the bound
+  moved to a `field_validator`. The union also exposed a defect in the generated docstring, which
+  rendered the fixed values *in place of* the type and so documented the parameter as accepting
+  only `'auto'`; `_numpydoc_type` now renders `int or {'auto'}`.
+- **The criterion is applied to the line-spread function Step 1 produced**, not to the templates'
+  native one, so the ratio is chosen only after matching has run. With no matching and no
+  template dispersion there is nothing to choose from, and `'auto'` falls back to 1 with a
+  warning. An explicit ratio below the minimum warns and names the ratio that would suffice.
+
+The criterion's threshold, `2/√(8 ln 2) ≈ 0.849` pixels, is computed where it is used and
+explained in the function's docstring rather than exported as a module constant, at the user's
+request.
+
+**The pixelization diagnostic, with a correction to the plan's reasoning.** The plan (Phase 2,
+"Input contract") specifies a soft warning when a supplied `idsp` implies `σ_inst ≲ Δ/√12`, on the
+grounds that such a vector "is probably post-pixelized or simply wrong". **The first half is
+backwards.** Pixel integration contributes `Δ²/12` to the variance, so a post-pixelized
+dispersion is always *at least* `Δ/√12`; a value below it therefore cannot be post-pixelized.
+What the check does catch is a vector that is wrong — most plausibly a unit error, since a
+dispersion in angstroms given as km/s is smaller by `c/λ ~ 60`. And the error the pre-pixelized
+contract actually warns about, a post-pixelized vector (MaNGA's `DISP`) supplied in place of a
+pre-pixelized one, makes the vector *larger* and cannot be detected by any threshold on the vector
+alone. `resolution.check_pixelization` implements the threshold as specified, warns rather than
+fails, and states both points in its docstring. `prepare` applies it to each input against that
+input's own sampling, since it is each input's own pixel whose integration sets the bound. The
+plan is left as written; this record carries the correction.
+
 ### Remaining — ⬜ not started
 
 Compared against the plan's Phase 2 specification:
@@ -634,12 +667,12 @@ Compared against the plan's Phase 2 specification:
 |---|---|
 | Library file I/O, at the `specutils` boundary | "Templates", "I/O boundary" |
 | The preparation-pipeline characterization: push lines of known width through Steps 1 and 2 and measure the effective `σ_T'(λ)` (verification item 9) | "Characterizing the pipeline" |
-| A warning when the resampled template is not Nyquist-sampled, advising a larger `velscale_ratio` | "Spectral resolution" |
-| Optional automatic selection of `velscale_ratio`, on the LSF-FWHM ≥ 2 px criterion | "`velscale_ratio` and the second bound on `δ`" |
-| The soft diagnostic for an `idsp` implying `σ_inst ≲ Δ/√12`, i.e. probably post-pixelized | "Input contract" |
 
-The two warnings the plan does require and that *are* in place, both in `resolution.py`: a
-negative `dvar_inst`, and template pixels that cannot reach the target resolution.
+Every warning the plan's Phase 2 specification requires is now in place: a negative `dvar_inst`
+and template pixels that cannot reach the target resolution (`resolution.py`), a missing
+resolution vector, an undersampled prepared template, and an implausibly small supplied
+dispersion (`templates.py`). The last two, and automatic `velscale_ratio`, are described in the
+`templates.py` section.
 
 ---
 
@@ -1022,3 +1055,16 @@ Tracks the fourteen verification items in the plan.
   share `dvar_inst = 0` but only one is corrected. `apply_kernel` refuses an identity match, and
   the cache key tags matched and unmatched preparations so neither can stand in for the other.
   Details in the `templates.py` section.
+- **2026-09-29** — **Three of Phase 2's remaining items complete** (373 tests in total), leaving
+  library file I/O and the preparation-pipeline characterization. `velscale_ratio` accepts
+  `'auto'` — chosen over `None` because TOML has no null — which selects the smallest ratio
+  keeping the prepared line-spread function's FWHM across two pixels; an explicit ratio below
+  that warns and names the ratio needed. Both use `resolution.minimum_velscale_ratio`, applied to
+  the dispersion Step 1 produced. `resolution.check_pixelization` warns when a supplied dispersion
+  falls below `Δ/√12`, checked for each input against its own sampling. **Corrected the plan's
+  rationale for that check**: a value below `Δ/√12` cannot be post-pixelized, since pixel
+  integration alone contributes that much, so what it catches is a wrong vector — a unit error
+  most plausibly — and a post-pixelized vector supplied by mistake is undetectable this way. The
+  `int | Literal['auto']` union exposed a docstring-generation defect, which rendered the fixed
+  values in place of the type; fixed by `_numpydoc_type`. Thresholds are explained in docstrings
+  rather than exported as constants, at the user's request.

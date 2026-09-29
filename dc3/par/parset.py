@@ -114,6 +114,39 @@ def _type_name(annotation):
     return getattr(annotation, '__name__', str(annotation))
 
 
+def _numpydoc_type(annotation):
+    """
+    Render a field annotation as the type of a NumPy-style docstring entry.
+
+    A parameter restricted to fixed values reports them as a set,
+    ``{'median', 'min', 'max'}``, which is what NumPy style asks for.  When the
+    fixed values are one member of a union, the other members are kept, so
+    ``int | Literal['auto']`` renders as ``int or {'auto'}`` rather than losing
+    the ``int``.
+
+    Parameters
+    ----------
+    annotation : object
+        The field annotation.
+
+    Returns
+    -------
+    str
+        The rendered type.
+    """
+    options = _field_options(annotation)
+    if options is None:
+        return _type_name(annotation)
+    choice = '{' + ', '.join(repr(o) for o in options) + '}'
+    if get_origin(annotation) not in (Union, types.UnionType):
+        return choice
+    others = [
+        _type_name(a) for a in get_args(annotation)
+        if get_origin(a) is not Literal and a is not type(None)
+    ]
+    return ' or '.join(others + [choice])
+
+
 def _toml_value(value):
     """
     Render a value in TOML syntax.
@@ -1030,7 +1063,8 @@ def parameter_docstring(par, indent='', width=79):
 
     Every parameter is marked ``optional``, since a :class:`ParSet` declares a
     default for each one, and a parameter restricted to a fixed set of values
-    reports them in place of its type, which is what NumPy style asks for.
+    reports them in place of its type, which is what NumPy style asks for; see
+    :func:`_numpydoc_type`.
 
     Parameters
     ----------
@@ -1061,10 +1095,7 @@ def parameter_docstring(par, indent='', width=79):
         )
     lines = []
     for key, f in par.model_fields.items():
-        options = _field_options(f.annotation)
-        dtype = _type_name(f.annotation) if options is None \
-            else '{' + ', '.join(repr(o) for o in options) + '}'
-        lines += [f'{indent}{key} : {dtype}, optional']
+        lines += [f'{indent}{key} : {_numpydoc_type(f.annotation)}, optional']
         # NOTE: break_on_hyphens and break_long_words are both off because the
         # descriptions are reStructuredText.  Splitting "Nyquist-sampled" or a
         # role such as :class:`numpy.ndarray` across lines would change what
