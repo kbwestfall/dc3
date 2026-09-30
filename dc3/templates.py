@@ -433,6 +433,44 @@ class PreparedTemplates(Spectra):
         """
         return self.match.astrophysical_variance(sigma_obs)
 
+    def velocity_offset(self, galaxy):
+        r"""
+        Return the velocity offset between these templates and a galaxy grid.
+
+        The prepared templates share the galaxy's pixel *sampling*, up to
+        :attr:`velscale_ratio`, but not its starting wavelength; the offset
+        this leaves is a constant velocity, handled analytically.  See
+        :func:`~dc3.core.sampling.grid_velocity_offset`.
+
+        Parameters
+        ----------
+        galaxy : :class:`~dc3.spectra.Spectra`
+            The galaxy spectra to be fit.
+
+        Returns
+        -------
+        float
+            The offset in km/s, to be added to a velocity measured from a
+            pixel lag.
+
+        Raises
+        ------
+        DC3Error
+            Raised if the galaxy's sampling is not exactly
+            :attr:`velscale_ratio` times the templates', in which case no
+            constant offset relates the two grids.
+        """
+        if not np.isclose(galaxy.dloglam, self.dloglam * self.velscale_ratio, rtol=1e-10):
+            raise DC3Error(
+                f'The galaxy pixel ({galaxy.dloglam:.6e} in log10 wavelength) is not '
+                f'{self.velscale_ratio} times the template pixel ({self.dloglam:.6e}), so the two '
+                'grids are not related by a constant velocity offset.  Prepare the templates '
+                'against this galaxy.'
+            )
+        return sampling.grid_velocity_offset(
+            self.log10lam0, galaxy.log10lam0, galaxy.dloglam, velscale_ratio=self.velscale_ratio
+        )
+
     def __repr__(self):
         """A short summary of the prepared library."""
         return (
@@ -667,7 +705,13 @@ def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1, sigma_floor=0.
         newdx=galaxy.dloglam / _velscale_ratio, newLog=True
     )
     out_flux = np.atleast_2d(resampled.outy)
-    log10lam0, dloglam = sampling.grid_from_wave(resampled.outx)
+    # Only the starting wavelength is taken from the resampled grid.  The pixel
+    # size is required to be exactly the galaxy's divided by the ratio -- that
+    # is what makes the offset between the two grids a constant velocity -- so
+    # it is set directly rather than recovered with round-off from the output
+    # wavelengths.
+    log10lam0, _ = sampling.grid_from_wave(resampled.outx)
+    dloglam = galaxy.dloglam / _velscale_ratio
 
     # The instrumental dispersion is a property of each wavelength, not an
     # integrated quantity, so it is interpolated rather than resampled.

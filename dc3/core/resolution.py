@@ -377,7 +377,7 @@ class ResolutionMatch:
     kernel_sigma : :class:`numpy.ndarray`, None
         Dispersion of the Gaussian convolution kernel at each pixel, in km/s.
         Real and positive everywhere by construction.  None if no matching was
-        performed; see :meth:`not_performed`.
+        performed; see :meth:`identity`.
     dvar_inst : float
         The signed instrumental variance left after matching, in
         :math:`({\rm km/s})^2`.  See the module documentation.

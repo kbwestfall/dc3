@@ -219,6 +219,47 @@ def test_velscale_ratio_sets_the_output_sampling():
         assert prepared.velscale_ratio == ratio, 'The ratio was not recorded on the result'
 
 
+@pytest.mark.parametrize('ratio', [1, 2, 3, 7])
+def test_prepared_sampling_matches_the_galaxy_exactly(ratio):
+    """
+    The template pixel is the galaxy pixel divided by the ratio, to round-off.
+
+    Only the sampling has to match for the offset between the grids to be a
+    constant velocity; the tolerance is set far tighter than ``numpy.isclose``'s
+    default, since an error in the pixel size accumulates across the spectrum.
+    """
+    galaxy = make_galaxy()
+    prepared = prepare_quietly(
+        make_library(ratio=max(ratio, 2)), galaxy, TemplatePar(velscale_ratio=ratio)
+    )
+    assert prepared.dloglam * ratio == pytest.approx(galaxy.dloglam, rel=1e-15), \
+        f'The prepared pixel is not the galaxy pixel divided by {ratio}'
+
+
+@pytest.mark.parametrize('ratio', [1, 3])
+def test_velocity_offset_follows_the_grids(ratio):
+    """The offset is the one the two grids imply, and the grids do differ."""
+    galaxy = make_galaxy()
+    prepared = prepare_quietly(
+        make_library(ratio=max(ratio, 2)), galaxy, TemplatePar(velscale_ratio=ratio)
+    )
+    expected = sampling.grid_velocity_offset(
+        prepared.log10lam0, galaxy.log10lam0, galaxy.dloglam, velscale_ratio=ratio
+    )
+    assert prepared.velocity_offset(galaxy) == expected, \
+        'The offset does not follow from the prepared and galaxy grids'
+    assert expected % galaxy.velscale != 0.0, \
+        'This test needs grids offset by a fraction of a pixel'
+
+
+def test_velocity_offset_refuses_a_galaxy_of_different_sampling():
+    """A galaxy the templates were not prepared against has no constant offset."""
+    prepared = prepare_quietly(make_library(), make_galaxy())
+    other = Spectra(np.ones(GALAXY_NPIX), GALAXY_LOG10LAM0, GALAXY_DLOGLAM * 1.01)
+    with pytest.raises(DC3Error, match='not related by a constant velocity offset'):
+        prepared.velocity_offset(other)
+
+
 def test_prepared_is_a_spectra_carrying_its_provenance():
     """The result is a Spectra that also knows how it was made."""
     prepared = prepare_quietly(make_library(), make_galaxy())

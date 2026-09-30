@@ -659,6 +659,31 @@ fails, and states both points in its docstring. `prepare` applies it to each inp
 input's own sampling, since it is each input's own pixel whose integration sets the bound. The
 plan is left as written; this record carries the correction.
 
+**Templates share the galaxy's pixel sampling, not its starting wavelength.** Step 2 starts the
+output grid at the template's first wavelength, so the prepared grid is offset from the galaxy's
+by a fraction of a pixel — 0.25, 0.50 and 0.75 of an output pixel at ratios 1–3 in the test
+setup. I first proposed registering the output grid to the galaxy's. **The user pointed out that
+this is unnecessary**, and why: only the *sampling* need match, since the offset between two
+grids of matched sampling is a constant velocity that can be handled analytically, as
+`mangadap`'s `PPXFFit.ppxf_tpl_obj_voff` does; and registration would not help anyway, because a
+Doppler shift almost never moves a rest wavelength by a whole number of pixels, so the two spectra
+are offset by a fraction of a pixel regardless. Adopted accordingly:
+
+- `sampling.grid_velocity_offset` adapts `ppxf_tpl_obj_voff` to grid parameters, in the
+  `log_velocity` convention so that the pixel-lag velocity and the offset simply add. With
+  `velscale_ratio > 1` the template's reference point is the centre of its first *binned*
+  pixel, as in `mangadap`. `PreparedTemplates.velocity_offset(galaxy)` applies it, refusing a
+  galaxy whose sampling is not exactly the ratio times the templates'. Tested against
+  `mangadap`'s wavelength-vector formula reproduced in the test, and against a synthetic Doppler
+  shift recovered from a pixel lag.
+- `prepare` now sets the output pixel size to exactly `galaxy.dloglam / velscale_ratio` rather
+  than recovering it from the resampled wavelengths, which carried a relative error of ~10⁻¹³.
+  Negligible, but the requirement can be exact by construction at no cost.
+
+The offset is consumed in Phase 3, where it joins the Fourier phase shift of the model. For the
+pipeline characterization it means the grid offset is not something production controls, so the
+characterization must vary it rather than fix it.
+
 ### Remaining — ⬜ not started
 
 Compared against the plan's Phase 2 specification:
@@ -1068,3 +1093,13 @@ Tracks the fourteen verification items in the plan.
   `int | Literal['auto']` union exposed a docstring-generation defect, which rendered the fixed
   values in place of the type; fixed by `_numpydoc_type`. Thresholds are explained in docstrings
   rather than exported as constants, at the user's request.
+- **2026-09-29** — **The offset between the template and galaxy grids is handled analytically**
+  (390 tests in total). Found while planning the pipeline characterization: the prepared grid
+  starts at the template's first wavelength, a fraction of a pixel off the galaxy's. Registration
+  was proposed and set aside on the user's direction: only the sampling need match, the offset is
+  a constant velocity, and a Doppler shift misaligns rest wavelengths by a fraction of a pixel
+  regardless. Added `sampling.grid_velocity_offset`, adapted from `mangadap`'s
+  `PPXFFit.ppxf_tpl_obj_voff`, and `PreparedTemplates.velocity_offset`; `prepare` now sets the
+  output pixel size exactly. Also fixed a stale `not_performed` reference left in a
+  `ResolutionMatch` docstring by the rename to `identity`. Also read Law et al. (2021, AJ 161, 52)
+  §§1–6.3 for the characterization; its bearing is recorded when that work lands.

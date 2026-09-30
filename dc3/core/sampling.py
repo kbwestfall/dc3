@@ -22,6 +22,10 @@ and redshift conversions are in :mod:`~dc3.core.velocity`.
     call sites differ as a result: ``variance()`` became a property, ``full()``
     became ``to_dense()``, and ``impose_triu`` became ``assume_symmetric``.
 
+    :func:`grid_velocity_offset` is adapted from
+    ``mangadap.proc.ppxffit.PPXFFit.ppxf_tpl_obj_voff`` (BSD 3-Clause), recast
+    in terms of the grid parameters rather than the wavelength vectors.
+
 .. include:: ../include/links.rst
 """
 
@@ -44,6 +48,7 @@ __all__ = [
     'grid_centers',
     'grid_from_wave',
     'grid_npix',
+    'grid_velocity_offset',
     'log_wavelength_grid',
     'velscale',
 ]
@@ -160,6 +165,59 @@ def grid_from_wave(wave, rtol=1e-6):
             'spectrum onto a logarithmic grid before ingesting it.'
         )
     return float(loglam[0]), dloglam
+
+
+def grid_velocity_offset(log10lam0_tpl, log10lam0_obj, dloglam_obj, velscale_ratio=1):
+    r"""
+    Return the velocity offset between two logarithmic grids of matched sampling.
+
+    Templates and galaxy spectra need share only their pixel *sampling* -- the
+    template pixel exactly ``1/velscale_ratio`` of the galaxy pixel -- not their
+    starting wavelength.  Whatever the two starting wavelengths, a pixel lag
+    between the spectra is then a fixed velocity plus this offset, which is
+    known analytically and so needs no registration of one grid to the other.
+    Nor would registering help: a Doppler shift almost never moves a given rest
+    wavelength by a whole number of pixels, so the two spectra are offset by a
+    fraction of a pixel regardless.
+
+    For a line at rest wavelength :math:`\lambda_r` in the template, and
+    Doppler shifted by :math:`V` in the galaxy, the pixel lag :math:`L` between
+    the two satisfies
+
+    .. math::
+
+        V = c\,\Delta\ln\lambda\,L + V_{\rm off}, \qquad
+        V_{\rm off} = c\,(\ln\lambda_{0,{\rm obj}} - \ln\lambda_{0,{\rm tpl}}),
+
+    where :math:`\Delta\ln\lambda` is the galaxy pixel.  This is the
+    ``log_velocity`` convention of :mod:`~dc3.core.velocity`, in which the two
+    terms simply add.
+
+    With ``velscale_ratio`` :math:`r > 1` the template is compared after being
+    binned down by :math:`r`, so the template's reference point is the centre
+    of its first *binned* pixel, :math:`(r-1)/2` template pixels past its first
+    pixel, rather than its first pixel.
+
+    Parameters
+    ----------
+    log10lam0_tpl : float
+        :math:`\log_{10}` of the wavelength of the template's first pixel.
+    log10lam0_obj : float
+        :math:`\log_{10}` of the wavelength of the galaxy's first pixel.
+    dloglam_obj : float
+        The galaxy pixel size in :math:`\log_{10}\lambda`.  The template pixel
+        is taken to be this divided by ``velscale_ratio``.
+    velscale_ratio : int, optional
+        Template pixels per galaxy pixel.
+
+    Returns
+    -------
+    float
+        :math:`V_{\rm off}` in km/s.  Positive when the galaxy grid starts
+        redward of the template's.
+    """
+    reference = log10lam0_tpl + (velscale_ratio - 1) / 2 * dloglam_obj / velscale_ratio
+    return SPEED_OF_LIGHT * np.log(10.0) * (log10lam0_obj - reference)
 
 
 # ======================================================================

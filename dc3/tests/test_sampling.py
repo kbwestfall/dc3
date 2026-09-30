@@ -69,6 +69,79 @@ def test_invalid_grids_are_rejected(wave, match):
 
 
 # ----------------------------------------------------------------------
+# The velocity offset between grids
+# ----------------------------------------------------------------------
+def test_grid_velocity_offset_vanishes_for_identical_grids():
+    """Two grids starting at the same wavelength have no offset."""
+    assert sampling.grid_velocity_offset(3.6, 3.6, 1e-4) == 0.0, \
+        'Identical grids should have no velocity offset'
+
+
+@pytest.mark.parametrize('npix', [3.0, 0.25, -1.5])
+def test_grid_velocity_offset_is_the_shift_in_pixels(npix):
+    """A galaxy grid starting ``npix`` pixels redward is offset by ``npix`` velocity scales."""
+    dloglam = 1e-4
+    offset = sampling.grid_velocity_offset(3.6, 3.6 + npix * dloglam, dloglam)
+    assert np.isclose(offset, npix * sampling.velscale(dloglam)), \
+        'The offset should be the grid shift expressed in velocity'
+
+
+@pytest.mark.parametrize('velscale_ratio', [1, 2, 3, 4])
+def test_grid_velocity_offset_matches_mangadap(velscale_ratio):
+    """
+    The offset agrees with ``mangadap``'s calculation from wavelength vectors.
+
+    ``PPXFFit.ppxf_tpl_obj_voff`` works from the vectors, taking the mean of
+    the first ``velscale_ratio`` template log-wavelengths as the template's
+    reference; its expression is reproduced here so the two formulations are
+    compared rather than one checked against itself.
+    """
+    dloglam_obj = 1e-4
+    obj_wave = sampling.log_wavelength_grid(3.61, dloglam_obj, 50)
+    tpl_wave = sampling.log_wavelength_grid(3.6003, dloglam_obj / velscale_ratio, 400)
+    velscale = sampling.velscale(dloglam_obj)
+    dlogl = np.log(obj_wave[0]) - np.mean(np.log(tpl_wave[0:velscale_ratio]))
+    expected = dlogl * velscale / np.diff(np.log(obj_wave[0:2]))[0]
+    offset = sampling.grid_velocity_offset(
+        np.log10(tpl_wave[0]), np.log10(obj_wave[0]), dloglam_obj, velscale_ratio=velscale_ratio
+    )
+    assert np.isclose(offset, expected, rtol=1e-8), \
+        f'The offset disagrees with the mangadap calculation at velscale_ratio={velscale_ratio}'
+
+
+@pytest.mark.parametrize('velscale_ratio', [1, 3])
+def test_grid_velocity_offset_recovers_a_doppler_shift_from_a_pixel_lag(velscale_ratio):
+    """
+    The pixel lag plus the offset gives back the Doppler shift.
+
+    A line at a known rest wavelength is placed in a template and, shifted by a
+    known velocity, in a galaxy on a grid with a different starting wavelength.
+    Its pixel position in each follows from the grid, and the lag between them
+    -- after binning the template down by ``velscale_ratio`` -- plus the offset
+    must equal the imposed velocity.  This is the property the offset exists
+    to provide.
+    """
+    dloglam_obj = 1e-4
+    dloglam_tpl = dloglam_obj / velscale_ratio
+    log10lam0_tpl, log10lam0_obj = 3.6, 3.6137
+    v_true = 1234.5
+    log10_rest = np.log10(5000.0)
+    log10_obs = log10_rest + v_true / (velocity.SPEED_OF_LIGHT * np.log(10.0))
+
+    tpl_pixel = (log10_rest - log10lam0_tpl) / dloglam_tpl
+    # Binning by velscale_ratio maps template pixel j to binned pixel (j - (r-1)/2)/r
+    tpl_binned_pixel = (tpl_pixel - (velscale_ratio - 1) / 2) / velscale_ratio
+    obj_pixel = (log10_obs - log10lam0_obj) / dloglam_obj
+    lag = obj_pixel - tpl_binned_pixel
+
+    offset = sampling.grid_velocity_offset(
+        log10lam0_tpl, log10lam0_obj, dloglam_obj, velscale_ratio=velscale_ratio
+    )
+    assert np.isclose(sampling.velscale(dloglam_obj) * lag + offset, v_true), \
+        'The pixel lag plus the grid offset should recover the imposed velocity'
+
+
+# ----------------------------------------------------------------------
 # Grid helpers
 # ----------------------------------------------------------------------
 def test_centers_and_borders_invert():

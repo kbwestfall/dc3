@@ -129,3 +129,7 @@ Functionality/Performance Improvements and Additions
 - Template preparation warns if a supplied instrumental dispersion is smaller
   than pixel integration alone would produce. Added
   ``dc3.core.resolution.check_pixelization``.
+
+- Added ``dc3.core.sampling.grid_velocity_offset`` and
+  ``PreparedTemplates.velocity_offset``, giving the constant velocity offset
+  between template and galaxy grids of matched sampling.
