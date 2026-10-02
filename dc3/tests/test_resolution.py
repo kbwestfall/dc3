@@ -15,7 +15,7 @@ import numpy as np
 from ppxf import ppxf_util
 import pytest
 
-from dc3.core import resolution, sampling
+from dc3.core import lsf, resolution, sampling
 from dc3.core.velocity import SPEED_OF_LIGHT
 from dc3.pkg.exceptions import DC3CodingError, DC3ResolutionError
 
@@ -137,7 +137,7 @@ def test_match_spectral_resolution():
     flux = emission_comb(wave, idsp_from)
 
     match = resolution.match_resolution(idsp_from, idsp_to, VELSCALE)
-    out = resolution.apply_kernel(loglam(npix), flux, match)
+    out = resolution.apply_kernel(flux, match)
 
     # What the prepared spectrum should be: the lines at the resolution that
     # actually results, which differs from the target by dvar_inst.
@@ -283,6 +283,76 @@ def test_offset_is_the_minimum_of_the_matching_variance():
         'dvar_inst does not equal min(res_match) - epsilon^2'
 
 
+# ----------------------------------------------------------------------
+# A pixel width that varies with wavelength
+# ----------------------------------------------------------------------
+def test_a_constant_velscale_array_is_the_scalar_case():
+    """
+    One width per pixel, all equal, gives exactly the logarithmic-grid result.
+
+    A logarithmic grid is the special case of the per-pixel construction, and
+    must remain bit-for-bit what it was.
+    """
+    idsp_from, idsp_to = np.linspace(10.0, 20.0, NPIX), np.linspace(40.0, 45.0, NPIX)
+    scalar = resolution.match_resolution(idsp_from, idsp_to, VELSCALE, epsilon_sigma=0.3)
+    array = resolution.match_resolution(
+        idsp_from, idsp_to, np.full(NPIX, VELSCALE), epsilon_sigma=0.3
+    )
+    assert array.dvar_inst == scalar.dvar_inst, \
+        'A constant per-pixel width changed dvar_inst from the scalar result'
+    assert np.array_equal(array.kernel_sigma, scalar.kernel_sigma), \
+        'A constant per-pixel width changed the kernel from the scalar result'
+    assert isinstance(scalar.velscale, float), 'A scalar velscale should be kept as a float'
+
+
+def test_minimum_kernel_is_epsilon_sigma_in_pixels_where_pixels_vary():
+    r"""
+    With pixels of varying width, the kernel is at least epsilon_sigma *pixels*.
+
+    A constant resolution difference needs the same kernel in km/s everywhere,
+    which is fewest pixels where the pixels are widest.  So the offset must be
+    set there: :math:`\delta^2 = {\rm res\_match} - (\epsilon v_{\rm max})^2`,
+    not :math:`(\epsilon v)^2` at wherever res_match happens to be smallest.
+    """
+    pixel_velocity = np.linspace(5.0, 10.0, NPIX)
+    epsilon = 0.3
+    match = resolution.match_resolution(
+        np.full(NPIX, 20.0), np.full(NPIX, 40.0), pixel_velocity, epsilon_sigma=epsilon
+    )
+    pixels = match.kernel_sigma_pixels
+    assert np.all(pixels >= epsilon * (1 - 1e-12)), \
+        'Some pixel was given a kernel narrower than epsilon_sigma pixels'
+    assert np.isclose(pixels[-1], epsilon), \
+        'The kernel should be exactly epsilon_sigma pixels where the pixels are widest'
+    assert np.isclose(match.dvar_inst, 40.0 ** 2 - 20.0 ** 2 - (epsilon * 10.0) ** 2), \
+        'dvar_inst should be set by the widest pixel'
+
+
+def test_velscale_array_must_have_one_element_per_pixel():
+    """A per-pixel width must match the dispersion vectors."""
+    with pytest.raises(DC3ResolutionError, match='one element per pixel'):
+        resolution.match_resolution(np.full(10, 20.0), np.full(10, 40.0), np.full(9, VELSCALE))
+    with pytest.raises(DC3ResolutionError, match='pixel widths'):
+        resolution.match_resolution(np.full(10, 20.0), np.full(10, 40.0), np.zeros(10))
+
+
+def test_check_pixelization_uses_each_pixels_own_width():
+    """
+    The pixel-integration bound follows the width of each pixel.
+
+    A dispersion that is plausible for the narrow pixels but not for the wide
+    ones is flagged, and only there.
+    """
+    pixel_velocity = np.linspace(2.0, 20.0, NPIX)
+    idsp = np.full(NPIX, 10.0 / np.sqrt(12.0))
+    with pytest.warns(UserWarning, match='the width of each pixel') as record:
+        passed = resolution.check_pixelization(idsp, pixel_velocity, label='test spectra')
+    assert not passed, 'The check should report failure where the wide pixels bound it'
+    nbelow = int(np.sum(idsp < pixel_velocity / np.sqrt(12.0)))
+    assert f'in {nbelow} of {NPIX} pixels' in str(record[0].message), \
+        'Only the pixels wider than the dispersion allows should be counted'
+
+
 def test_sigma_floor_clamps_the_offset_and_flags_the_remainder():
     """
     sigma_floor caps how far the offset may go negative.
@@ -371,13 +441,57 @@ def test_identity_kernel_cannot_be_applied():
     """
     identity = resolution.ResolutionMatch.identity(NPIX, VELSCALE)
     with pytest.raises(DC3CodingError, match='not performed'):
-        resolution.apply_kernel(loglam(), np.ones(NPIX), identity)
+        resolution.apply_kernel(np.ones(NPIX), identity)
 
 
 def test_identity_repr_says_uncorrected():
     """The summary makes the absence of a correction visible."""
     assert 'uncorrected' in repr(resolution.ResolutionMatch.identity(NPIX, VELSCALE)), \
         'The identity match should describe itself as uncorrected'
+
+
+# ----------------------------------------------------------------------
+# Jumps in resolution
+# ----------------------------------------------------------------------
+def test_idsp_breaks_find_a_step():
+    """A step in the dispersion is one break, at the first pixel after it."""
+    idsp = np.concatenate([np.full(100, 30.0), np.full(100, 45.0)])
+    assert np.array_equal(resolution.idsp_breaks(idsp), [100]), \
+        'A step in the dispersion should be one break, at the first pixel after it'
+
+
+def test_idsp_breaks_ignore_a_smooth_vector():
+    """A dispersion that varies smoothly, even by a large total, has no breaks."""
+    idsp = np.linspace(30.0, 60.0, 4000)
+    assert resolution.idsp_breaks(idsp).size == 0, 'A smooth vector was reported as jumping'
+
+
+def test_idsp_breaks_measure_the_change_against_the_smaller_value():
+    """
+    The change is relative to the smaller dispersion, so up and down agree.
+
+    A step of 1.5 per cent of the smaller value exceeds the default one per
+    cent whichever way it goes.
+    """
+    up = np.concatenate([np.full(10, 40.0), np.full(10, 40.6)])
+    assert np.array_equal(resolution.idsp_breaks(up), [10]), 'A rising step was missed'
+    assert np.array_equal(resolution.idsp_breaks(up[::-1]), [10]), 'A falling step was missed'
+    assert resolution.idsp_breaks(up, tol=0.02).size == 0, \
+        'A step of 1.5 per cent should be smooth at a tolerance of 2 per cent'
+
+
+def test_idsp_breaks_report_a_spread_jump_as_a_run():
+    """A jump interpolated over a few pixels flags each boundary it crosses."""
+    idsp = np.concatenate([np.full(50, 30.0), [35.0, 40.0], np.full(50, 45.0)])
+    assert np.array_equal(resolution.idsp_breaks(idsp), [50, 51, 52]), \
+        'A jump spread over three boundaries should flag all three'
+
+
+@pytest.mark.parametrize('bad', [np.zeros(10), np.ones((2, 10))], ids=['zero', '2d'])
+def test_idsp_breaks_reject_an_invalid_vector(bad):
+    """The dispersion must be a positive vector."""
+    with pytest.raises(DC3ResolutionError):
+        resolution.idsp_breaks(bad)
 
 
 # ----------------------------------------------------------------------
@@ -527,8 +641,14 @@ def test_uniform_kernel_triggers_the_upstream_off_by_one():
     The clip is only the trigger, by making ``sig`` exactly uniform.  The defect
     itself is width-independent: it fires here at 0.5 px, well inside the range
     where the convolution is supposed to be accurate.  A perturbation of one
-    part in 1e-12 to a single interior element restores the correct answer,
-    which is what rules out any numerical explanation.
+    part in 1e12 to a single interior element restores the correct answer at
+    this length, which is what rules out any numerical explanation.  (At twenty
+    thousand pixels a perturbation that small is lost in rounding; see
+    ``apply_kernel``'s workaround, which uses a larger one.)
+
+    **This test is the signal to remove that workaround.**  The defect has been
+    reported upstream; when a ``ppxf`` release fixes it, the first assertion
+    fails.
     """
     npix = 800
     index = np.arange(npix, dtype=float)
@@ -545,7 +665,8 @@ def test_uniform_kernel_triggers_the_upstream_off_by_one():
     uniform = np.full(npix, 0.5)
     assert not np.isclose(realised(ppxf_util.varsmooth(x, y, uniform)), 0.5, atol=0.05), (
         'A uniform 0.5 px kernel on an exactly uniform grid was applied correctly; the upstream '
-        'off-by-one appears to be fixed, and the guard on epsilon_sigma can be revisited'
+        'off-by-one appears to be fixed.  Remove the workaround in '
+        'resolution._break_kernel_uniformity, and revisit the guard on epsilon_sigma'
     )
 
     perturbed = uniform.copy()
@@ -556,37 +677,123 @@ def test_uniform_kernel_triggers_the_upstream_off_by_one():
     )
 
 
-def test_dc3_grids_avoid_the_off_by_one():
-    """
-    A uniform kernel on a realistic grid is applied correctly.
+@pytest.mark.parametrize(
+    'npix,oversample',
+    [(2000, 2), (2000, 4), (20000, 2), (20000, 4), (300000, 4), (1000000, 2)]
+)
+def test_apply_kernel_avoids_the_off_by_one(npix, oversample):
+    r"""
+    A uniform kernel is applied correctly, whatever the length and oversampling.
 
     dc3's own construction produces an exactly uniform kernel whenever the two
-    resolutions differ by a constant, which is a common case.  It escapes the
-    upstream defect only because ``numpy.gradient`` of a logarithmic wavelength
-    grid carries floating-point noise, so ``sig`` is not *exactly* uniform.
-    That is luck rather than design, so it is pinned here: if it ever ceases to
-    hold, every ``dvar_inst`` from such a run would be wrong.
+    resolutions differ by a constant, which is a common case; at the default
+    epsilon_sigma it is exactly 0.1 px, on varsmooth's clip.  apply_kernel
+    passes pixel coordinates, whose gradient is exact, so nothing but its
+    workaround stands between that case and the upstream defect.
+
+    The lengths reach past a million stretched samples, where a fixed
+    perturbation of 1e-6 overshoots and broadens the line just as the defect
+    does; the workaround's perturbation is scaled to the stretched span
+    instead.
+
+    The reference is the same perturbation made ten times larger, which
+    lengthens varsmooth's internal grid by a tenth of a sample rather than a
+    hundredth: any size inside the window between the rounding floor and one
+    sample must give the same answer, so agreement means the defect is cured
+    fully, not partly.  The unperturbed kernel is checked to fail, so the test
+    is discriminating at every length and oversampling.  The oversamplings are
+    those apply_kernel accepts, 2 and above; the workaround itself is tested at
+    1 as well, below.
     """
-    npix = 800
-    match = resolution.match_resolution(
-        np.full(npix, 30.0), np.full(npix, 50.0), VELSCALE
-    )
-    assert np.all(match.kernel_sigma == match.kernel_sigma[0]), \
+    match = resolution.match_resolution(np.full(npix, 30.0), np.full(npix, 30.5), VELSCALE)
+    kernel = match.kernel_sigma_pixels
+    assert np.all(kernel == kernel[0]), \
         'A constant resolution difference should give an exactly uniform kernel'
+    assert np.isclose(kernel[0], resolution.VARSMOOTH_MIN_SIG), \
+        'This test needs the kernel at the default epsilon_sigma of 0.1 px'
 
-    index = np.arange(npix, dtype=float)
-    sigma_in = 4.0
-    flux = np.exp(-0.5 * np.square((index - npix / 2) / sigma_in))
-    out = resolution.apply_kernel(loglam(npix), flux, match)
-    mean = np.sum(out * index) / np.sum(out)
-    width = np.sqrt(np.sum(out * np.square(index - mean)) / np.sum(out))
-    measured = np.sqrt(max(width ** 2 - sigma_in ** 2, 0.0))
+    center = float(npix // 3)
+    flux = lsf.gaussian_comb(npix, np.array([center]), 1.0)
+    x = np.arange(npix, dtype=float)
 
-    assert np.isclose(measured, match.kernel_sigma_pixels[0], rtol=0.05), (
-        f'A uniform kernel of {match.kernel_sigma_pixels[0]:.3f} px was applied as '
-        f'{measured:.3f} px; the upstream off-by-one is now firing on dc3 grids and dvar_inst '
-        'is wrong wherever the two resolutions differ by a constant'
+    def width(out):
+        return lsf.fit_line(out, center, 1.1)[2]
+
+    larger = kernel.copy()
+    larger[0] *= 1 + 0.1 / (oversample * (npix - 1))
+    reference = width(ppxf_util.varsmooth(x, flux, larger, oversample=oversample))
+    measured = width(resolution.apply_kernel(flux, match, oversample=oversample))
+    defective = width(ppxf_util.varsmooth(x, flux, kernel, oversample=oversample))
+
+    assert not np.isclose(defective, reference, rtol=5e-3), \
+        'The unperturbed uniform kernel did not trigger the defect, so this test is vacuous'
+    assert np.isclose(measured, reference, rtol=1e-4), (
+        f'apply_kernel broadened a line to {measured:.5f} px rather than {reference:.5f} px; the '
+        'workaround for the upstream off-by-one no longer protects a uniform kernel'
     )
+
+
+@pytest.mark.parametrize('oversample', [1, 0, -2])
+def test_apply_kernel_requires_an_oversampling_of_at_least_two(oversample):
+    r"""
+    An oversampling below 2 is refused.
+
+    At 1 a uniform kernel is applied exactly while one that varies even
+    slightly is broadened by up to :math:`\Delta^2/3`, so results would depend
+    on whether the kernel happened to be uniform.
+    """
+    match = resolution.match_resolution(np.full(NPIX, 10.0), np.full(NPIX, 40.0), VELSCALE)
+    with pytest.raises(DC3ResolutionError, match='at least 2'):
+        resolution.apply_kernel(np.ones(NPIX), match, oversample=oversample)
+
+
+def test_pixel_coordinates_reproduce_the_logarithmic_call():
+    """
+    Passing pixel coordinates is the same convolution as passing log wavelength.
+
+    On a logarithmic grid the two differ only in how varsmooth converts the
+    kernel to pixels, which is exact either way, so with the same kernel they
+    agree to round-off; and the workaround's perturbation moves the result from
+    the unperturbed call by only a few parts in 1e7 of the peak.
+    """
+    npix = 3000
+    centers = np.arange(100, npix - 100, 61.37)
+    flux = lsf.gaussian_comb(npix, centers, 1.0)
+    kernel_pixels = 0.1 + 1.9 * np.abs(np.sin(np.arange(npix) / 400.0))
+    match = resolution.ResolutionMatch(
+        kernel_pixels * VELSCALE, 0.0, np.zeros(npix, dtype=bool), VELSCALE, 0.1
+    )
+    out = resolution.apply_kernel(flux, match, oversample=2)
+
+    perturbed = resolution._break_kernel_uniformity(match.kernel_sigma_pixels, oversample=2)
+    same = ppxf_util.varsmooth(loglam(npix), flux, perturbed * DLOGLAM, oversample=2)
+    assert np.allclose(out, same, rtol=0.0, atol=1e-10 * np.amax(out)), \
+        'Pixel coordinates and log wavelength gave different convolutions of the same kernel'
+
+    unperturbed = ppxf_util.varsmooth(
+        loglam(npix), flux, match.kernel_sigma_pixels * DLOGLAM, oversample=2
+    )
+    assert np.amax(np.absolute(out - unperturbed)) < 1e-6 * np.amax(out), \
+        'The workaround perturbation changed the convolved spectrum by more than 1e-6 of its peak'
+
+
+@pytest.mark.parametrize('oversample', [1, 4])
+def test_workaround_increases_only_the_largest_element(oversample):
+    """
+    The perturbation raises the maximum, by a hundredth of a stretched sample.
+
+    Raising the maximum always lengthens varsmooth's internal grid, and cannot
+    be undone by its clip, which only raises values.  The stretched span of
+    this kernel is oversample * (1 + 2 + 1 + 4) samples, so the maximum is
+    raised by 0.01 / (8 oversample).  See _break_kernel_uniformity.
+    """
+    sig = np.array([0.1, 0.4, 0.2, 0.4, 0.1])
+    perturbed = resolution._break_kernel_uniformity(sig, oversample=oversample)
+    assert np.isclose(perturbed[1], 0.4 * (1 + 0.01 / (8 * oversample)), rtol=1e-14, atol=0), \
+        'The first maximum was not raised by a hundredth of the stretched span'
+    assert np.array_equal(np.delete(perturbed, 1), np.delete(sig, 1)), \
+        'Elements other than the maximum were changed'
+    assert sig[1] == 0.4, 'The input kernel was modified in place'
 
 
 # ----------------------------------------------------------------------
@@ -594,24 +801,51 @@ def test_dc3_grids_avoid_the_off_by_one():
 # ----------------------------------------------------------------------
 def test_apply_kernel_conserves_flux():
     """Convolution redistributes flux; it does not create or destroy it."""
-    x = loglam()
     flux = np.zeros(NPIX)
     flux[NPIX // 2] = 1.0
     match = resolution.ResolutionMatch(
         np.full(NPIX, 5.0 * VELSCALE), 0.0, np.zeros(NPIX, dtype=bool), VELSCALE, 0.1
     )
-    assert np.isclose(np.sum(resolution.apply_kernel(x, flux, match)), 1.0, rtol=1e-3), \
+    assert np.isclose(np.sum(resolution.apply_kernel(flux, match)), 1.0, rtol=1e-3), \
         'Convolution did not conserve the total flux'
+
+
+def test_apply_kernel_uses_each_pixels_own_width():
+    """
+    On pixels of varying width, each is convolved by its own kernel in pixels.
+
+    The same kernel in km/s spans more pixels where the pixels are narrower, so
+    a comb convolved on such a grid must broaden by kernel_sigma_pixels at each
+    line, not by a single conversion.
+    """
+    npix = 3000
+    pixel_velocity = np.linspace(4.0, 8.0, npix)
+    centers = np.arange(150, npix - 150, 97.3)
+    flux = lsf.gaussian_comb(npix, centers, 2.0)
+    match = resolution.ResolutionMatch(
+        np.full(npix, 12.0), 0.0, np.zeros(npix, dtype=bool), pixel_velocity, 0.1
+    )
+    out = resolution.apply_kernel(flux, match)
+    expected = np.sqrt(4.0 + np.square(np.interp(centers, np.arange(npix), 12.0 / pixel_velocity)))
+    _, sigma = lsf.measure_comb(out, centers, expected)
+    assert np.allclose(sigma, expected, rtol=0.03), \
+        'The realised kernel does not follow the per-pixel width in pixels'
+
+
+def test_apply_kernel_refuses_a_spectrum_of_the_wrong_length():
+    """The spectrum must be on the grid the kernel was computed for."""
+    match = resolution.match_resolution(np.full(NPIX, 10.0), np.full(NPIX, 40.0), VELSCALE)
+    with pytest.raises(DC3CodingError, match='kernel was computed for'):
+        resolution.apply_kernel(np.ones(NPIX + 1), match)
 
 
 def test_apply_kernel_handles_a_set_of_spectra():
     """A 2-D input is convolved spectrum by spectrum."""
-    x = loglam()
     flux = np.vstack([np.full(NPIX, 1.0), np.full(NPIX, 2.0)])
     match = resolution.ResolutionMatch(
         np.full(NPIX, 5.0 * VELSCALE), 0.0, np.zeros(NPIX, dtype=bool), VELSCALE, 0.1
     )
-    out = resolution.apply_kernel(x, flux, match)
+    out = resolution.apply_kernel(flux, match)
     assert out.shape == flux.shape, 'The convolved set does not have the input shape'
     assert np.isclose(out[0, NPIX // 2], 1.0, rtol=1e-3), 'A constant was not preserved'
     assert np.isclose(out[1, NPIX // 2], 2.0, rtol=1e-3), \
@@ -623,3 +857,88 @@ def test_repr_reports_the_sense_of_the_offset():
     match = resolution.match_resolution(np.full(NPIX, 10.0), np.full(NPIX, 40.0), VELSCALE)
     assert 'higher resolution' in repr(match), \
         'The representation does not report the sense of the offset'
+
+
+# ----------------------------------------------------------------------
+# The excess of the convolution, and correcting for it
+# ----------------------------------------------------------------------
+def test_varsmooth_excess_runs_from_zero_to_a_sixth():
+    """
+    The predicted excess vanishes for a vanishing kernel and tends to 1/6 for a wide one.
+
+    At small k interpolating back at the original nodes returns the original
+    samples, and the excess falls to zero in proportion to k; at large k the
+    kernel resolves the triangle of linear interpolation, whose variance is
+    1/6.  Between, it rises monotonically.  The 1/(6(mD)^2) term is removed by
+    a very large D.
+    """
+    k = np.geomspace(0.01, 10.0, 200)
+    excess = resolution.varsmooth_excess(k, 2, 1e8)
+    assert excess[0] < 0.01, 'The excess should vanish, in proportion to k, for a small kernel'
+    assert abs(excess[-1] - 1 / 6) < 1e-6, 'The excess should tend to 1/6 for a wide kernel'
+    assert np.all(np.diff(excess) >= 0), 'The excess should rise monotonically with the kernel'
+
+
+def corrected_match(idsp_from, idsp_to, **kwargs):
+    """Match with the convolution's excess corrected for, at an oversampling of 2."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return resolution.match_resolution(
+            idsp_from, idsp_to, VELSCALE, varsmooth_oversample=2, **kwargs
+        )
+
+
+def test_corrected_kernel_applies_the_target():
+    r"""
+    The corrected kernel applies, with the convolution's excess, exactly what is needed.
+
+    :math:`k^2 + E_1(k)` pixels squared, with :math:`D` from the widest kernel,
+    makes up the difference between the two resolutions less ``dvar_inst``,
+    and the achieved resolution is the target less ``dvar_inst``.  The kernel
+    is narrower than the uncorrected one, and reaches the floor at one pixel.
+    """
+    idsp_from = np.full(NPIX, 20.0)
+    idsp_to = np.linspace(25.0, 60.0, NPIX)
+    match = corrected_match(idsp_from, idsp_to)
+    k = match.kernel_sigma_pixels
+    applied = np.square(k) + resolution.varsmooth_excess(k, 2, np.amax(k) / k)
+    total = np.square(idsp_from) + applied * VELSCALE ** 2
+    expected = np.square(idsp_to) - match.dvar_inst
+    assert np.allclose(total, expected, rtol=1e-6, atol=0.0), \
+        'The kernel and the excess it brings should together make up the difference'
+    assert np.allclose(match.achieved, np.sqrt(expected), rtol=1e-6, atol=0.0), \
+        'The achieved resolution should be the target less dvar_inst'
+    assert np.isclose(np.amin(k), 0.1), 'The kernel should reach the floor at one pixel'
+    uncorrected = resolution.match_resolution(idsp_from, idsp_to, VELSCALE)
+    assert np.all(k[1:] < uncorrected.kernel_sigma_pixels[1:]), \
+        'The corrected kernel should be narrower than the uncorrected one'
+
+
+def test_corrected_match_reports_what_unmatched_pixels_achieve():
+    r"""
+    Where the target cannot be reached, the achieved resolution is what the floor leaves.
+
+    With no pedestal allowed, pixels whose source is broader than the target
+    are held at the floor kernel, and achieve their own dispersion plus the
+    floor's :math:`g(\epsilon_\sigma)` -- broader than the target, as reported.
+    """
+    idsp_from = np.full(NPIX, 30.0)
+    idsp_to = np.where(np.arange(NPIX) < NPIX // 4, 25.0, 45.0)
+    match = corrected_match(idsp_from, idsp_to)
+    assert match.n_unmatched == NPIX // 4, 'The pixels broader than the target should be unmatched'
+    k = match.kernel_sigma_pixels
+    floor = 0.01 + resolution.varsmooth_excess(0.1, 2, np.amax(k) / 0.1)
+    expected = np.sqrt(30.0 ** 2 + floor * VELSCALE ** 2)
+    assert np.allclose(match.achieved[match.unmatched], expected), \
+        'An unmatched pixel should report its own dispersion plus what the floor kernel adds'
+    assert np.all(match.achieved[match.unmatched] > idsp_to[match.unmatched]), \
+        'An unmatched pixel achieves a broader resolution than the target'
+
+
+def test_uncorrected_match_achieves_the_kernel_alone():
+    """Without the correction the achieved resolution is the quadrature sum with the kernel."""
+    idsp_from = np.full(NPIX, 20.0)
+    match = resolution.match_resolution(idsp_from, np.linspace(25.0, 60.0, NPIX), VELSCALE)
+    assert np.allclose(
+        match.achieved, np.sqrt(np.square(idsp_from) + np.square(match.kernel_sigma))
+    ), 'Without the correction only the kernel is assumed to change the resolution'

@@ -20,10 +20,10 @@ dc3/pkg/version.py
 coverage.xml
 htmlcov/
 
-# Sphinx
+# Sphinx.  The generated doc/api/*.rst files are committed, as in PypeIt:
+# Read the Docs builds from the repository and never runs `make apirst`.
 doc/_build/
-doc/api/
-doc/include/*.rst
+doc/sphinx_warnings.out
 
 # Editors and OS
 .vscode/
@@ -34,3 +34,8 @@ doc/include/*.rst
 # Scratch
 tmp/
 scratch/
+
+# Data files
+doc/figures/*/*.ecsv
+doc/figures/exploration
+

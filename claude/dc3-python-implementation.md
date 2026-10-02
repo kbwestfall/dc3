@@ -6,8 +6,8 @@ why**. The plan says what should happen; this says what did.
 
 **Status:** Phase 0 complete. **Phase 1 complete** apart from the datamodel decision, which the
 plan defers to prototyping `dc3/results.py` in Phase 4. **Phase 2 in progress**: every module is
-written, but library file I/O and the preparation-pipeline characterization remain (see
-Phase 2, "Remaining"). 373 tests passing.
+written and the preparation pipeline characterized; library file I/O and applying the measured
+broadening to `dvar_inst` remain (see Phase 2, "Remaining"). 413 tests passing.
 
 ---
 
@@ -363,11 +363,12 @@ not a decision.
 
 ⬜ **Unresolved. Raised by the user when `grid_from_wave` was written.**
 
-`dc3` **refuses** a linearly sampled wavelength vector rather than resampling it silently, which
-is the right call: every velocity in the package assumes logarithmic sampling, so accepting one
-would give results wrong in a way nothing downstream could detect.
+`dc3` **refuses** linearly sampled *galaxy* spectra rather than resampling them silently, which is
+the right call: the galaxy's flux distribution is never redistributed, and de-redshifting by whole
+pixels needs a logarithmic grid. (Template libraries, since 2026-09-30, are accepted on any grid
+and resampled once, during preparation; see "Jumps in the library" below.)
 
-But that leaves a user holding a linear spectrum with no supported route in. `Resample` can do the
+But that leaves a user holding a linear galaxy spectrum with no supported route in. `Resample` can do the
 conversion and is now available, so the missing piece is a **utility script** exposing it as an
 explicit pre-processing step — which also keeps the conversion visible in the provenance rather
 than buried.
@@ -415,6 +416,26 @@ case `dc3` meets:
 directive. Removing them later costs nothing; the decision is flagged rather than taken because it
 is a scientific judgement, not a coding one.
 
+### Detecting spliced regions in irregular grids
+
+⬜ **Future enhancement, logged at the user's request.** Not planned for now.
+
+Some template libraries are spliced from sections sampled differently. `SpectralGrid` describes
+such a library as `irregular`, and when given only its pixel centres derives the borders by
+`centers_to_borders`, which is exact within each section but misplaces the border just below the
+last pixel before each splice, by a quarter of the change in pixel size.
+
+If the grid is in fact **piecewise regular** — sections each linear or logarithmic — the sections
+could be detected, each given exact borders in its own convention, and, where contiguous, the
+border between them fixed exactly: the last pixel of one section extends half its step above its
+centre, and the first pixel of the next half its own step below. That removes the splice error,
+which no single midpoint rule can.
+
+The detection is the same problem as finding the jumps in sampling that the discontinuity guards
+need, so the two belong together. Since 2026-09-30 `SpectralGrid.breaks` finds the jumps; what
+remains is to recognize each section as regular and give it exact borders, which would also
+collapse each splice's run of breaks to one.
+
 ### The datamodel decision — ⬜ still open
 
 **Whether the datamodel splits I/O from validation** or stays a single `DataContainer`-style
@@ -456,9 +477,19 @@ and that it fails for `classical_velocity`, so the test is discriminating rather
 
 The logarithmic grid, the grid helpers, and `Resample`. 27 tests.
 
-**A linear wavelength grid is refused**, not resampled or tolerated. Every velocity in `dc3`
-assumes logarithmic sampling, so accepting one would give results wrong in a way nothing
-downstream could detect. (See the open question on a pre-processing utility.)
+**Since split in two**, at the user's request, as the module grew to cover distinct concepts:
+`Resample` and the `mangadap` grid helpers that serve it (`grid_npix`, `grid_borders`,
+`grid_centers`, `borders_to_centers`, `centers_to_borders`) moved, verbatim, to
+`dc3/core/resample.py`, with their tests to `test_resample.py` and the `mangadap` attribution with
+them. `sampling.py` keeps the description of grids: the logarithmic-grid helpers,
+`grid_velocity_offset`, and the new `SpectralGrid` and `sampling_type` (see the change log,
+2026-09-30).
+
+**A linear wavelength grid was refused** by `grid_from_wave`, the function that reduced a
+wavelength vector to logarithmic grid parameters. Since 2026-09-30 that function is gone: a
+`Spectra` set holds a `SpectralGrid` of any kind, and only `GalaxySpectra` refuses one that is not
+logarithmic. (See the open question on a pre-processing utility, and "Jumps in the library"
+below.)
 
 **`Resample` is adapted from `mangadap`, not PypeIt.** The two implementations were diffed: they
 are *identical* apart from covariance, which PypeIt has commented out wholesale for want of a
@@ -477,9 +508,11 @@ It is copied here, with a test.
 
 ### `dc3/spectra.py` — ✅ complete
 
-The internal container: plain contiguous `float64` arrays on a shared logarithmic grid, with
-units fixed by convention and documented rather than carried. `specutils` is used at the I/O
-boundary and not touched again inside the fit. 23 tests.
+The internal container: plain contiguous `float64` arrays on a shared grid, with units fixed by
+convention and documented rather than carried. `specutils` is used at the I/O boundary and not
+touched again inside the fit. 23 tests when first written. (Since 2026-09-30 the grid is a
+`SpectralGrid` of any kind, and the galaxy is a `GalaxySpectra`, which requires a logarithmic
+one; see "Jumps in the library" below.)
 
 - **Always 2-D.** A single spectrum is `nspec == 1`, so nothing downstream special-cases it.
 - **`mean()` averages unmasked pixels only**, which is load-bearing rather than a detail: the mean
@@ -502,7 +535,7 @@ The `dvar_inst` machinery. 32 tests, including one ported from
 | `mangadap` | Here | Why it drops out |
 |---|---|---|
 | Stores `R`, converts to σ at every step | σ in km/s throughout | The conversion happens once, at ingest |
-| Three coordinate systems (Å², (km/s)², px²) with a linear/log branch in each | One, plus a scalar division | `dc3` is always logarithmically sampled |
+| Three coordinate systems (Å², (km/s)², px²) with a linear/log branch in each | One, plus a division by each pixel's width in velocity | The width comes from the grid's borders whatever its kind (a scalar division until 2026-09-30, when only logarithmic grids were accepted) |
 | Mutates four attributes; calls must be ordered | Returns `ResolutionMatch` | — |
 | Signed σ encoded as `σ²/√|σ²|` | Signed *variance* | The square root is taken once, where the kernel is known real |
 | `fudge = 1.01` so the extremal pixel is not masked | none | The minimum kernel is *constructed* to equal `epsilon_sigma` exactly |
@@ -549,7 +582,8 @@ The whole-pixel shift to the approximate rest frame. 19 tests.
 **No data moves, and nothing is truncated.** An integer pixel shift can be implemented two ways:
 roll the arrays and keep the grid, or keep the arrays and relabel the grid. They are equivalent
 *except* that rolling discards `n_shift` pixels off one end. Relabelling is therefore strictly
-better, and is what is implemented — only `log10lam0` changes.
+better, and is what is implemented — only `log10lam0` changes (since 2026-09-30, by replacing the
+set's `SpectralGrid` with `grid.shifted(-n_shift)`).
 
 This is a small deviation from the plan's description, which anticipated the rolling form: it says
 "truncation at the ends is handled the same way" and that the `idsp` vector is "re-indexed along
@@ -684,6 +718,189 @@ The offset is consumed in Phase 3, where it joins the Fourier phase shift of the
 pipeline characterization it means the grid offset is not something production controls, so the
 characterization must vary it rather than fix it.
 
+### The preparation-pipeline characterization — ✅ complete; correction not yet applied
+
+The plan's Phase 2 deliverable and verification item 9. Four re-runnable experiments in
+`doc/scripts/characterize_*.py`, sharing `doc/scripts/characterize_common.py`; each writes a PNG
+figure and an ECSV table to `doc/figures/characterization/`, which are committed and regenerated
+with `make figures` from `doc/` (following PypeIt, the documentation build never runs them). The
+measurement tools are in the package, `dc3/core/lsf.py`, so the regression test can use them.
+
+**The question, as the user framed it.** Given a template of known pixel size and known
+*pre-pixelized* instrumental dispersion, does preparation change that pre-pixelized dispersion,
+and how? `mangadap` assumed Step 1 changes it by exactly the kernel in quadrature and Step 2 not
+at all. The characterization tests that assumption directly.
+
+**Reading of Law et al. (2021, AJ 161, 52)**, at the user's request, shaped the method more than
+the plan anticipated:
+
+- **§3.2 and Figure 4 fix how widths must be measured.** A Gaussian fit at the pixel centres
+  returns the *post*-pixelized width, 1–10% broader than the pre-pixelized one at 2–0.8 px. The
+  plan's "fit the output widths" did not say which fit; since `dc3`'s contract is pre-pixelized,
+  the fit must be to a pixel-integrated Gaussian, or the instrument would inject a bias of the
+  size being measured. `lsf.fit_line` does so by default.
+- **§3.4 and Figure 8 are the method for Step 2** — a comb of known widths, many pixel phases,
+  a median and a phase band — and show the DRP's own rectification broadening the LSF. They
+  also show the DRP applying one *post*-to-post factor to its pre-pixelized estimates, an
+  assumption the paper did not test and characterization 3 does.
+
+The user asked whether that paper contradicted the planned test; it does not, and it motivates it.
+
+**The four experiments and what they found.** All widths are pre-pixelized, measured by the
+pixel-integrated fit; variance changes are in units of the relevant pixel squared.
+
+| # | Script | Finding |
+|---|---|---|
+| 1 | `pixelization` | The pixel-integrated fit recovers the input width **exactly** (to round-off), at every phase. The fit at pixel centres reproduces Law et al.'s published polynomial to **0.18%** over its range — an independent check on the setup. |
+| 2 | `matching` | Step 1 adds a nearly constant **Δ²/6**, independent of the input width, once the kernel exceeds about half a pixel, falling towards zero as the kernel shrinks to the 0.1-px floor. `oversample` does not remove it; at `oversample = 1` an extra excess grows with the kernel. |
+| 3 | `resampling` | Step 2 adds a median of **Δ_in²/6**, independent of the input width and of the pixel-size ratio from 1/4 to 4. It is **zero** only where the grids are aligned at an integer ratio, and ranges 0–0.28 Δ_in² with the grid offset. The pre-to-pre broadening factor (≈ 1.08 at 1 px) and Law et al.'s post-to-post factor agree only near equal pixel sizes; at a ratio of 1/4 the latter is 1.04. |
+| 4 | `preparation` | Through `prepare` exactly, the templates are broader than `PreparedTemplates.idsp` reports by **0.33–0.50 Δ_tpl²** — **+5% to +8% in σ** for lines at 1.2 native pixels, about MILES's sampling of its own LSF — in every configuration. `velscale_ratio` does not help; `varsmooth_oversample = 4` removes about 0.06. The one exception, 0.17, is where the output pixel equals the native template pixel, so Step 2 contributes nothing. |
+
+**So the `mangadap` assumption fails at both steps, by about the same amount each.** The
+mechanisms are identified, not merely measured:
+
+- **Step 1:** `varsmooth` moves the spectrum onto its stretched coordinate with `numpy.interp`.
+  Linear interpolation is convolution with a triangle of variance Δ²/6; once the kernel is
+  resolved it smooths that interpolant, and the variance survives. Where the kernel is tiny,
+  interpolating back at the original nodes returns the original samples, hence the fall towards
+  zero. `oversample` refines the stretched grid but not the input samples, so cannot touch it;
+  the extra excess at `oversample = 1` is the *return* interpolation from a stretched grid whose
+  spacing nears 1/`oversample` px where the kernel is widest. This is the effect C23 §3.1
+  acknowledges and leaves unquantified.
+- **Step 2:** `Resample` treats each input pixel as flat. On a finer output grid, both the
+  input's real pixel integration and that flat-pixel reconstruction survive as width, ≈ 2 × 1/12;
+  aligned integer binning is the special case in which the discrete averaging adds exactly the
+  variance the wider output pixel accounts for. Since the offset between grids follows from the
+  templates' and galaxy's starting wavelengths, production does not control it.
+
+**Two corrections to the plan's expectations**, which is left as written:
+
+- The plan expected the Step-2 excess to be "of order Δ²_tpl/12". It is about **twice** that in
+  the median, and up to 0.28 Δ²; my own prediction while planning, Δ_in²/12, was wrong by the same
+  factor, for the reason above.
+- The plan expected Step 1's interpolation effect to be reduced by `varsmooth`'s `oversample`,
+  "the lever that reduces it". **It is not**: the dominant term comes from interpolating the
+  *input* samples, which `oversample` does not affect.
+
+**What is not yet done: applying the correction.** The plan says to use the measured `σ_T'` in
+`dvar_inst` "where it differs significantly". At +5–8% in σ it does, and the effect is larger in
+`dvar_inst` terms for DMS-like data near the resolution floor. How to apply it is a design
+decision left to the user: an analytic `≈ Δ²/6` per step is simple but ignores the phase spread;
+a per-configuration measurement at preparation time — the "once per configuration" run the plan
+describes — is exact for the configuration but costs a comb and a fit per run. Recording the
+measured `σ_T'(λ)` in the output header waits on the datamodel.
+
+**`fix_center` and `window`** were added to `lsf.fit_line` at the user's request: a fixed centre
+removes a parameter correlated with the width where the centre is known, and `window` is the full
+width in pixels, with the half-width `window // 2`. With `fix_center` the flux is still fit, since
+it changes with the pixel size whenever the grid changes.
+
+**Also fixed:** `prepare` passed the template wavelengths to `Resample` without `inLog=True`, so
+the input pixel borders were arithmetic rather than geometric midpoints — a misplacement of
+~5 × 10⁻⁶ px. Negligible, but the characterization should measure `Resample` working correctly.
+
+**Figure design.** The figures follow the `dataviz` guidance: the first slots of its validated
+categorical palette in fixed order, 1.5 pt lines and 8 px markers with a surface-coloured ring,
+solid hairline grids, a legend on every multi-series panel since three light slots fall below 3:1
+contrast, and at most three series where every pair must be told apart. Its palette validator
+could not be run, since Node is not installed; the palette used is its documented reference
+instance, recorded there as passing.
+
+**The committed figures are byte-reproducible.** matplotlib records a PNG's matplotlib version,
+and stamps an SVG with its creation date and element ids derived from a random salt, so a
+regeneration would otherwise appear as a change in git — on every run for an SVG, on every
+matplotlib upgrade for a PNG. The scripts omit the version and date and fix the salt; two runs
+produce identical files. The figures were first written as SVG, and switched to PNG, at 200 dpi,
+at the user's request.
+
+### Jumps in the library's sampling and resolution — ✅ complete
+
+Executed from the supporting plan [`dealing-with-discontinuities.md`](dealing-with-discontinuities.md),
+written and agreed with the user before implementation, in its six steps. 503 tests in total.
+
+**1. `Spectra` holds a `SpectralGrid`.** The constructor is `Spectra(flux, grid, ...)`, with
+`from_wave(wave, flux, borders=None, tol=1e-3)` building the grid by `SpectralGrid.from_vector`.
+`wave`, `loglam` and `pixel_velocity` delegate to the grid for any kind; `log10lam0`, `dloglam`
+and `velscale` raise for a grid that is not logarithmic. A copy may be relabelled onto another grid
+of the same length with `copy(grid=...)`, which is how `to_rest_frame` now shifts. `grid` is
+read-only. `grid_from_wave` is removed, with its tests; `TemplateLibraryPar.log10` is replaced by
+`sampling_tol`, since the library is no longer resampled on ingest.
+**The galaxy is a new class, `GalaxySpectra`**, which requires a logarithmic grid. The plan said
+only that constructing the galaxy should raise on another grid; with the galaxy a plain `Spectra`
+and `TemplateLibrary` a subclass that may be irregular, the user chose a new subclass over
+enforcing the rule in `Spectra` or in each consumer. `prepare` resamples through
+`Resample(xBorders=library.grid.borders)`, so a linear or irregular library is resampled exactly
+once, from its own borders. That switch was planned for step 5 and moved to step 1, which needs
+it for a linear library.
+
+**2. A per-pixel pixel velocity.** `match_resolution`, `ResolutionMatch` and `check_pixelization`
+accept one velocity width per pixel; `δ² = min(res_match − (ε v_pix)²)`. A constant array gives
+bit-for-bit the scalar result, which is tested.
+
+**3. Pixel coordinates in `apply_kernel`, and the `varsmooth` workaround.** `apply_kernel(flux,
+match, oversample)` passes `varsmooth` `x = arange(npix)` and `match.kernel_sigma_pixels`; its
+`loglam` argument is gone. On a logarithmic grid this reproduces the old call to round-off. The
+plan's workaround for the upstream off-by-one was corrected twice during implementation, each
+time with the user's agreement after a measurement:
+
+- **Which element.** The plan reduced the smallest interior element. At the default
+  `epsilon_sigma = 0.1` that element sits exactly on `varsmooth`'s 0.1-px clip, which raises it
+  back, so a kernel constant in km/s still triggered the defect (1.216 px against 1.005). The
+  workaround **raises the largest element** instead: that scales every other element's span by the
+  same factor, cannot be undone by the clip, and keeps the stretched samples in step with the
+  input pixels.
+- **How much.** Reading `varsmooth` showed a second bound the plan missed: `n = ceil(S)` samples
+  over the stretched span `S`, so growth of a whole sample adds a point and misaligns the grid,
+  broadening a uniform kernel just as the defect does. A fixed 10⁻⁶ fails that way once `S`
+  passes about a million (300,000 px at `oversample=4`). Scaling to `oversample·(N−1)` fixed that,
+  but changed a *varying* kernel's result by 2–3%, since its `S` is many times larger. The size
+  is now **ε = 0.01/S**, a hundredth of a stretched sample for any kernel: correct from 2,000 to
+  1,000,000 px at `oversample` 1 and 4, and a change of ~5 × 10⁻⁷ of the peak for a varying kernel.
+
+`test_uniform_kernel_triggers_the_upstream_off_by_one` is kept as the signal to remove the
+workaround once a fixed `ppxf` is released; the user has reported the defect upstream. The module
+docstring's "one part in 10¹²" is corrected: that size is lost by twenty thousand pixels.
+
+**4. Detection.** `SpectralGrid.breaks(tol=0.01)` flags `|Δ_{i+1}/Δ_i − 1|` above the larger of
+`tol` and `4 ε₃₂ max(λ/Δλ)`; `resolution.idsp_breaks(idsp, tol=0.01)` flags a relative change
+above `tol`. `TemplateLibrary` carries `sampling_jump_tol` and `idsp_jump_tol`, keys of
+`TemplateLibraryPar`, and exposes `sampling_breaks` and `idsp_breaks`; `prepare` logs the counts
+and warns above 5 sampling segments. Two details the plan did not specify:
+
+- **A splice can flag a run of boundaries.** With borders derived from the centres, the
+  misplaced border just below the last pixel before a splice spreads the jump over the two
+  boundaries below it. Every flagged boundary is returned, so the guard bands cover all of them,
+  and a run counts as one splice for the warning; otherwise two real splices would trip it.
+- The tolerances live on the `TemplateLibrary` object, since they describe the library and
+  `prepare`'s keywords are `TemplatePar`'s one for one.
+
+**5. Guard bands and segment-bounded interpolation.** `SpectrumBitMask` gains `SAMP_JUMP` and
+`RES_JUMP`, always set, and `TemplatePar` gains `jump_guard = 3`. The prepared dispersion and
+`UNMATCHED` are carried onto the output grid within segments, never across a break. The cache key
+now includes `jump_guard` and both library tolerances, since they change the prepared mask. A
+spliced library is shown to prepare identically to a regular one away from its splice.
+
+**6. The characterization — `doc/scripts/characterize_splices.py`, `make splices`.** A comb
+integrated exactly over each pixel's own borders, across a sampling splice (0.02 → 0.03 Å) and,
+separately, a resolution step (3 → 12 km/s), with the galaxy at a resolution that is constant
+near the join so the matching kernel is too (about 13 km/s). Each line is measured against
+`prepare`'s reported width, relative to lines of its own section clear of the join:
+
+| Jump | Departs by > 0.3% within | Inside the band | Outside the band |
+|---|---|---|---|
+| Sampling | −1.7 to +1.4 kernel σ | up to 1.0% in width, 0.15 km/s in centre | < 0.10%, < 0.01 km/s |
+| Resolution | −2.3 to +2.0 kernel σ | up to 25% in width, 2.4 km/s in centre | < 0.17%, < 0.01 km/s |
+
+**`jump_guard = 3` is therefore sufficient**, and not much wider than needed; 2 would leave
+departures of a few tenths of a per cent at the band's edge. One inefficiency, not a defect: the
+band is set in native pixels of the wider kernel, so on the coarser side of a sampling splice it
+reaches 4.9 rather than 3 kernel dispersions. `test_guard_band_covers_where_prepared_lines_depart`
+pins the result on a narrower range; it fails at `jump_guard = 1`, so it discriminates.
+
+The other characterization tables move by at most 7 × 10⁻⁶, from the workaround's perturbation; of
+the figures, `matching.png` and `preparation.png` change in their pixels and the rest are
+byte-identical.
+
 ### Remaining — ⬜ not started
 
 Compared against the plan's Phase 2 specification:
@@ -691,7 +908,7 @@ Compared against the plan's Phase 2 specification:
 | Item | Plan section |
 |---|---|
 | Library file I/O, at the `specutils` boundary | "Templates", "I/O boundary" |
-| The preparation-pipeline characterization: push lines of known width through Steps 1 and 2 and measure the effective `σ_T'(λ)` (verification item 9) | "Characterizing the pipeline" |
+| Applying the measured preparation broadening to `dvar_inst` (see above) | "Characterizing the pipeline" |
 
 Every warning the plan's Phase 2 specification requires is now in place: a negative `dvar_inst`
 and template pixels that cannot reach the target resolution (`resolution.py`), a missing
@@ -703,7 +920,39 @@ dispersion (`templates.py`). The last two, and automatic `velscale_ratio`, are d
 
 ## Phases 3–8
 
-⬜ **Not started.** See the plan.
+⬜ **Not started**, apart from the documentation scaffold below. See the plan.
+
+### Phase 8 — documentation scaffold, brought forward
+
+🔵 **Begun early**, at the user's request, so the preparation characterization could be written up
+in `doc/dev/` during its review.
+
+`doc/conf.py`, `doc/index.rst`, `doc/whatsnew.rst`, `doc/dev/index.rst`, `doc/include/links.rst`,
+and the generated `doc/api/`. Structured after PypeIt, with these differences:
+
+- **`numpydoc` renders the docstrings**, not `sphinx.ext.napoleon`, as the plan specifies.
+  `numpydoc_show_class_members` is off because `sphinx-apidoc`'s pages already list every member
+  through autodoc. The plan's `numpydoc_validation_checks` is **not yet enabled**.
+- **The generated `doc/api/*.rst` are committed**, as PypeIt's are, because Read the Docs builds
+  from the repository and runs no `make` target. `.gitignore` had excluded `doc/api/` and
+  `doc/include/*.rst`; both exclusions are removed. `sphinx-apidoc` runs with `--no-toc`, since
+  the landing page links the package page directly and its `modules.rst` would be an orphan.
+- **Release notes are included into a single `whatsnew.rst`**, at the user's request, following
+  PypeIt; `releases/*.rst` are excluded from the build so they are not also orphan pages.
+
+The ordinary build — what Read the Docs runs, with `fail_on_warning` — finishes with **no
+warnings**. Getting there fixed three real defects: an `.. include::` path that was wrong in
+`templates.py` and `spectra.py` (relative to the module rather than to `doc/api/`, where every
+module's page lands), a short section underline in `lsf.py`, and an example in the
+`document_parameters` docstring whose literal `Parameters` heading `numpydoc` read as a second
+Parameters section even inside a code block.
+
+**Not yet addressed:** the nitpicky build (`make picky`) reports ~290 unresolved cross-references.
+The user asked to set that aside for now. Most come from autodoc rendering each `pydantic` field
+of a `ParSet` as a class attribute with its full `Annotated[..., FieldInfo(...)]` type; the
+reflection-generated parameter tables the plan calls for are the natural fix. The remainder are
+unqualified method references in docstrings and dependencies without an object inventory (ppxf,
+`pygit2`).
 
 ---
 
@@ -728,10 +977,18 @@ is a one-off.
 | 1 | `alambda` dropped | It is the damping parameter of the hand-rolled Levenberg–Marquardt being replaced; `scipy.optimize.least_squares` has no counterpart. `lam` survives as `fit.x_scale`, which is meaningful and is published. | ⬜ not yet |
 | 1 | `BitMaskArray` is not a `DataContainer` | PypeIt's is, which the plan notes couples its adoption to the datamodel decision. Keeping it a plain wrapper leaves that decision open. | ⬜ not yet |
 | 1 | `BitMask.validate_header` replaces `from_header` | Bits are class-declared here, so reconstructing a mask from a file is less useful than checking the file against the declaration and refusing on mismatch. | ⬜ not yet |
+| 2 | `Resample` lives in `dc3/core/resample.py`, not `dc3/core/sampling.py` | The plan puts resampling in `sampling.py`. Split out once `sampling.py` also had to describe linear and irregular grids and detect sampling, so that each module covers one concept. | ⬜ not yet |
 | 2 | De-redshifting relabels the grid rather than rolling the arrays | The plan describes truncation at the ends and re-indexing the dispersion vector, which the rolling form requires. Relabelling achieves the same shift while discarding no pixels, and keeps flux and dispersion in correspondence with no work. | ⬜ not yet |
 | 1, 2 | Parameter sets declared beside the code they configure, not all in `dc3/par/dc3par.py` | The plan puts every set in `dc3par.py`, PypeIt's arrangement. That layout would force `import ppxf` into `dc3par.py` for any `FuncPar` wrapping a ppxf function, breaking the plan's own rule that ppxf imports stay in two modules. `dc3/par/__init__.py` exports the machinery only, since re-exporting a concrete set closes an import cycle. | ⬜ not yet |
 | 2 | `TemplateLibraryPar` split from `TemplatePar`; `fiducial_method` added | The plan has one `TemplatePar` with four parameters. What a library *is* and how it is *prepared* change independently, so they are separate sets. `fiducial_method` had been an argument of `prepare` with no configuration-file route, which broke the 1:1 rule. | ⬜ not yet |
 | 1, 2 | `ParSet.to_kwargs` and `document_parameters` | Not in the plan. A parameter set is expanded over the function it configures, and that function's docstring Parameters section is generated from it, so keywords, defaults and descriptions cannot drift. Agreement is checked by test. | ⬜ not yet |
+| 2 | `Spectra` holds a `SpectralGrid` of any kind; the galaxy is a `GalaxySpectra`, which must be logarithmic | The plan describes `Spectra` as a log-λ-sampled set. Libraries arrive sampled however their authors chose, and resampling one on ingest as well as in Step 2 would resample it twice, each adding about Δ²/6 of pre-pixelized variance. | ⬜ not yet |
+| 2 | `varsmooth` is passed pixel coordinates and the kernel in pixels, not log λ | The plan says to pass log λ so that the centred-gradient conversion to pixels is exact. Pixel coordinates make it exact on any grid, including at a jump in sampling; on a log grid the result is unchanged. | ⬜ not yet |
+| 2 | `apply_kernel` perturbs the kernel to avoid an upstream `varsmooth` defect | Not in the plan. Pixel coordinates make the off-by-one on an exactly uniform kernel certain rather than latent; the largest element is raised by a hundredth of a stretched sample. To be removed when `ppxf` is fixed. | ⬜ not yet |
+| 2 | `varsmooth_oversample` must be at least 2, default 2 | The plan exposes the parameter with no bound. At 1, a uniform kernel is convolved exactly while one that varies even slightly is broadened by up to Δ²/3, so results would depend on whether the kernel happened to be uniform; see the change log, 2026-10-01. | ⬜ not yet |
+| 2 | Spliced libraries: jumps in sampling and resolution detected, and guard bands masked as `SAMP_JUMP` and `RES_JUMP` | Not in the plan, which assumes smoothly varying sampling and resolution. Designed in `dealing-with-discontinuities.md`; adds `sampling_tol`, `sampling_jump_tol` and `idsp_jump_tol` to `TemplateLibraryPar` and `jump_guard` to `TemplatePar`, and extends the cache key. | ⬜ not yet |
+| 2 | Masked library pixels grown and flagged `TPL_MASKED`; `jump_guard` renamed `convolution_mask_growth` | Not in the plan, which does not use the library's mask. The convolution cannot carry a mask, so masked pixels are convolved as they are and the prepared templates masked around them; see the change log, 2026-10-02. | ⬜ not yet |
+| 2 | The preparation excess is corrected analytically, by default, in the kernel and the target | The plan says to use the *measured* σ_T′ in `dvar_inst` where it differs significantly. Instead, Step 1's predicted excess is folded into the kernel by `match_resolution`, and Step 2's into the target by `prepare`, so the prepared templates reach the target rather than being corrected for afterwards; `correct_lsf_excess` and `resample_excess_method` added to `TemplatePar`. See the change log, 2026-10-02. | ⬜ not yet |
 ---
 
 ## Verification status
@@ -748,7 +1005,7 @@ Tracks the fourteen verification items in the plan.
 | 6 | Cross-check against `ppxf` | ⬜ |
 | 7 | K = 1 regression, multi-template vs single-template | ⬜ |
 | 8 | `varsmooth` vs `convolution_variable_sigma` | ⬜ |
-| 9 | Preparation-pipeline characterization | ⬜ |
+| 9 | Preparation-pipeline characterization | ✅ measured, and pinned by `test_preparation_characterization.py`; correction to `dvar_inst` not yet applied. Extended to jumps in the library (`characterize_splices.py`), which confirms the guard band |
 | 10 | `varsmooth` 0.1-px floor assertion | ⬜ |
 | 11 | `dvar_inst` sign handling | ⬜ |
 | 12 | QA reproducibility (inline vs regenerated) | ⬜ |
@@ -1103,3 +1360,591 @@ Tracks the fourteen verification items in the plan.
   output pixel size exactly. Also fixed a stale `not_performed` reference left in a
   `ResolutionMatch` docstring by the rename to `identity`. Also read Law et al. (2021, AJ 161, 52)
   §§1–6.3 for the characterization; its bearing is recorded when that work lands.
+- **2026-09-30** — **The preparation-pipeline characterization is complete** (413 tests in
+  total): the plan's Phase 2 deliverable and verification item 9. Four experiments in
+  `doc/scripts/`, with committed SVG figures and ECSV tables regenerated by `make figures`, and
+  the measurement tools in `dc3/core/lsf.py`. Following Law et al. (2021) §3.2, widths are
+  measured with a pixel-integrated Gaussian so that they are pre-pixelized, as the user's question
+  requires. **The `mangadap` assumption — that only Step 1 changes the pre-pixelized dispersion,
+  and by exactly the kernel — fails at both steps**: `varsmooth`'s linear interpolation adds about
+  Δ²/6, and `Resample`'s flat-pixel treatment adds a median Δ_in²/6, zero only for aligned integer
+  ratios. Together the prepared templates are 5–8% broader in σ than `PreparedTemplates.idsp`
+  reports, and neither `velscale_ratio` nor `varsmooth_oversample` removes it. Corrected two
+  expectations in the plan, left as written: the Step-2 excess is about twice the Δ²/12 it
+  anticipates, and `oversample` does not reduce the dominant Step-1 term. Also found that Law et
+  al.'s post-to-post broadening factor, which the MaNGA DRP applied to pre-pixelized widths, agrees
+  with the pre-to-pre factor only near equal pixel sizes. Fixed `prepare` passing the template
+  grid to `Resample` without `inLog=True`. **Applying the correction to `dvar_inst` is not yet
+  done** and is left to the user as a design decision. Added `fix_center` and a full-width
+  `window` to `lsf.fit_line` at the user's request.
+- **2026-09-30** — **Documentation scaffold built**, Phase 8 work brought forward so the
+  characterization can be documented in `doc/dev/` during its review: `conf.py` with `numpydoc`,
+  the landing page, a `whatsnew.rst` including the release notes (at the user's request, after
+  PypeIt), a `dev/` section, and the `sphinx-apidoc` API pages, which are committed as PypeIt's
+  are. `.gitignore` no longer excludes `doc/api/` or `doc/include/*.rst`. The ordinary build has no
+  warnings, after fixing a wrong `.. include::` path in two modules, a section underline, and a
+  docstring example that `numpydoc` misread as a second Parameters section. The nitpicky build's
+  ~290 unresolved references are set aside at the user's request. **The characterization figures
+  now default to PNG**, at 200 dpi, at the user's request, having first been SVG; they remain
+  byte-reproducible, with the matplotlib version omitted from the PNG metadata.
+- **2026-09-30** — **Began generalizing the spectral grid, and split `Resample` into its own
+  module** (413 tests in total). Prompted by the user: standard libraries are not logarithmically
+  sampled, and the current design would resample a linear library twice — once on ingest, once in
+  Step 2 — when the characterization shows each resampling adds a median Δ²/6 to the
+  pre-pixelized variance. Agreed direction: abstract `Spectra` by giving it a grid object, rather
+  than separating `TemplateLibrary` or subclassing by sampling; the user chose a single grid class,
+  support for irregular grids (spliced libraries with jumps in sampling and resolution), and a
+  user-settable tolerance.
+
+  Added `sampling.SpectralGrid` — immutable, of kind `log`, `linear` or `irregular`, with centres,
+  borders, per-pixel velocity widths, and log-only `dloglam`/`velscale`/`shifted` — and
+  `sampling.sampling_type`, which fits a uniform grid in λ and in log λ and measures the largest
+  departure in pixels. **Corrected the tolerance I had proposed**: 10⁻³ px alone rejects
+  float32-stored grids beyond λ/Δλ ≈ 2 × 10⁴ (measured: 2.4 × 10⁻³ px for a 7.5 km/s log grid,
+  2.6 × 10⁻² px for a synthetic library), so the test compares against the larger of `tol` and
+  twice the float32 rounding, applied whatever the dtype since float32 rounding survives
+  conversion. An irregular grid given only its centres gets geometric-midpoint borders, misplaced
+  at a sampling jump by a quarter of the change in pixel size; its docstring recommends supplying
+  the borders. Neither is used yet, nor tested; `grid_from_wave` stays until `Spectra` moves over.
+
+  At the user's request `Resample` and its `mangadap` helpers moved verbatim to
+  `dc3/core/resample.py`, their tests to `test_resample.py`; see the deviations table. Rebuilding
+  the documentation exposed two docstring defects the earlier "no warnings" check had missed,
+  because it counted only lines reading `WARNING`: a malformed table in the new `SpectralGrid`
+  docstring (a Sphinx `ERROR`), and a `The construction` heading in `match_resolution` that
+  `numpydoc` does not recognize and so **silently dropped from the rendered page**. Both fixed,
+  and every docstring in the package now parses cleanly under `numpydoc`.
+- **2026-09-30** — **Revised `SpectralGrid` after the user's review** (413 tests in total). The
+  user renamed the constructors — `from_log_spacing`, `from_linear_spacing`, and `from_vector`,
+  which takes optional `borders`; the `irregular` classmethod is gone. Then, at the user's
+  direction:
+
+  - **Irregular grids take the linear-centre convention.** A regular grid's borders follow from
+    its parameters in its own convention, so only an irregular grid needs one chosen, and its
+    vector does not say which applies; the two differ by about `1/(8 λ/Δλ)` of a pixel. The
+    user chose linear as the clearer assumption. I had called the geometric midpoint the correct
+    convention, which overstated it. Borders are now derived by `centers_to_borders(log=False)`,
+    which misplaces a different border at a splice from the geometric midpoint I had written — the
+    one just below the last pixel before the splice rather than the splice border itself — by the
+    same quarter of the change in pixel size, and is exact within each section.
+  - **`borders_to_centers` and `centers_to_borders` moved into `sampling.py`**, and `Resample`
+    imports them from there, so that the module that uses grids depends on the one that describes
+    them rather than the reverse.
+  - **Arrays are computed once, not recomputed.** `wave`, `borders`, `loglam` and
+    `pixel_velocity` are built on construction and stored read-only behind plain `property`
+    accessors. `functools.cached_property` was considered and rejected: it lets the attribute be
+    assigned over, which a shared, immutable grid must not allow, and it would have exposed a
+    shared, writeable cache.
+  - **The float32 floor is written as `np.finfo(np.float32).eps`**, the same value as the former
+    `2 * 2**-24`, now self-explanatory, and shared with `from_vector` through `_departure_limit`.
+  - **Fixed:** `shifted` still called the removed `SpectralGrid.log`; a grid made the caller's
+    own array read-only, since `_validate_wave` does not copy; and `from_vector` silently
+    discarded borders given for a vector that proved regular, which it now checks against the
+    fitted grid and refuses on disagreement.
+
+  Logged the detection of spliced regions in irregular grids as a future enhancement.
+- **2026-09-30** — **Tests for `sampling_type` and `SpectralGrid`** (450 in total; 37 new). Beyond
+  the construction, geometry and validation of each kind of grid, four behaviours are pinned
+  because each was a deliberate decision: that float32-rounded regular grids stay regular — with a
+  companion test showing the rounding alone exceeds the default tolerance at DiskMass-like
+  sampling, so the floor is what admits them; that an irregular grid's derived borders follow the
+  linear-centre convention, exact except the border just below the last pixel before a splice; that
+  a grid neither freezes the caller's arrays nor lets its own be changed, in place or by
+  assignment; and that `from_vector` refuses borders inconsistent with a regular vector. Each of
+  the first three was confirmed to fail when the behaviour it guards was reverted in memory.
+- **2026-09-30** — **Jumps in the library's sampling and resolution** (503 tests in total; see the
+  new Phase 2 section). Planned in the new supporting document `dealing-with-discontinuities.md`
+  and agreed with the user before implementation; executed in its six steps. `Spectra` now holds a
+  `SpectralGrid` of any kind; the galaxy is a new `GalaxySpectra`, which requires a logarithmic
+  one — the user's choice over enforcing the rule in `Spectra` or in each consumer.
+  `grid_from_wave` and `TemplateLibraryPar.log10` are removed. `match_resolution` takes a
+  per-pixel velocity width. `apply_kernel` passes `varsmooth` pixel coordinates, with a workaround
+  for its off-by-one on a uniform kernel that was **corrected twice from the agreed plan**, each
+  time after measurement and with the user's agreement: it raises the largest element rather than
+  reducing the smallest, since the clip undid the latter at the default `epsilon_sigma`; and by a
+  hundredth of the stretched span rather than a fixed 10⁻⁶, since a fixed size overshoots by a
+  whole sample on long grids and a size scaled to the pixel count changes varying kernels by
+  2–3%. Jumps are detected by `SpectralGrid.breaks` and `resolution.idsp_breaks`, and masked as
+  `SAMP_JUMP` and `RES_JUMP` with `jump_guard = 3`; a run of adjacent breaks counts as one splice.
+  The new characterization `characterize_splices.py` confirms the default band covers the region
+  where prepared lines depart. `Resample(xBorders=...)` moved from step 5 to step 1, which needed
+  it. The port plan is left unchanged at the user's direction; four deviations are logged, and
+  stale statements in the `sampling.py`, `spectra.py`, `resolution.py` and `deredshift.py`
+  sections and in two open questions are brought up to date.
+- **2026-10-01** — **First developer page**, `doc/dev/template_preparation.rst`, at the user's
+  request: one page, written for the development team, summarizing the motivation, methods and
+  results of the five preparation characterizations, the open decision on applying the correction
+  to `dvar_inst`, and how to regenerate and where each finding is pinned by test. It may later be
+  split into several pages. The figures are included from `doc/figures/characterization/`; the
+  build remains free of warnings.
+- **2026-10-01** — **The user's figure conventions replace the `dataviz` design** described under
+  the preparation characterization ("Figure design"): points drawn with `scatter` and no border,
+  lines with `plot`, matplotlib's default colour cycle rather than a custom palette, and inward
+  minor and major ticks on all four axes. The tick settings are in
+  `characterize_common.apply_style`, so they reach every figure on its next regeneration; the
+  rest are per script. Converted so far: `characterize_pixelization.py` only, at the user's
+  request, to refine `pixelization.png` before the others. Because `scatter` and `plot` advance
+  separate colour cycles, a panel mixing them names the default colours (`'C0'`, `'C1'`, ...)
+  explicitly. The old palette constants stay in `characterize_common.py`, marked for removal,
+  until the other four scripts are converted.
+- **2026-10-01** — **What the Step-1 excess is, and a minimum `varsmooth_oversample` of 2.**
+  `characterize_matching.py` was extended at the user's request (σ_in = 0.5 px, kernels to
+  10 px, the fractional excess on a log axis), and three exploratory scripts were added,
+  `explore_convolution_methods.py`, `explore_kernel_dynamic_range.py` and
+  `explore_kernel_fitting.py`, writing to the untracked `doc/figures/exploration/`. Findings:
+  - **The excess is specific to `varsmooth`'s vector path**, which interpolates linearly onto
+    its stretched grid and back. Its scalar path and `ppxf_util.gaussian_filter1d`, neither of
+    which interpolates, show none for k ≳ 1 px.
+  - **It is predicted exactly in the second moment**: the samples are convolved with the hat
+    function of linear interpolation and the Gaussian, sampled at whole pixels, whose variance
+    exceeds k² by `1/6 − (1/π²) Σ exp(−2π²p²k²)/p² + 1/(6(mD)²)`, with m the oversampling and
+    D = k_max/k the *local* dynamic range, the widest kernel anywhere in the spectrum relative
+    to the local one. The sum is the fall-off below about half a pixel; the last term the
+    return interpolation, largest where the kernel is widest. Agreement is to four decimals in
+    the second moment, for every input width. The same reasoning predicts
+    `gaussian_filter1d`'s negative excess below 1 px (an undersampled sampled Gaussian), and
+    it truncates its kernel at about 4.1σ, costing 0.06 px² of variance at k = 10 px.
+  - **A Gaussian fit sees less than the second moment** for narrow lines, since the effective
+    kernel is not Gaussian. A fit that convolves the template line with a Gaussian kernel, as a
+    kinematic fit does (`fit_kernel`, by the analytic transform), reports the same excess as the
+    pixel-integrated Gaussian fit for lines of 1 px and wider, so the characterizations already
+    measure what the kinematics will see.
+  - **A varying kernel shifts lines** towards the wider kernel, by up to 2kk′ in the first
+    moment, matched exactly by `gaussian_filter1d` and somewhat less by `varsmooth`; the
+    kernel fit and the Gaussian fit both see about half of it. Negligible for slowly varying
+    resolution, but systematic.
+  - **Cost** scales roughly linearly with the oversampling and with the internal grid,
+    m Σ(k_max/k); for typical libraries prepared once per run, 2 against 1 is immaterial.
+
+  **Decision (the user's): `varsmooth_oversample ≥ 2`, default 2**, enforced in
+  `TemplatePar` and in `apply_kernel`, which now defaults to 2 and raises `DC3ResolutionError`
+  below it. The reason is consistency: for a uniform kernel the stretched grid lines up with
+  the pixels and the excess is `(1 − 1/m²)/6`, zero at m = 1, so at the old default a uniform
+  kernel was applied exactly while a slightly varying one was broadened by up to Δ²/3. At
+  m ≥ 2 the uniform case lies within 0.04 Δ² of the rest. Production never passes `varsmooth`
+  a scalar dispersion, so its scalar path does not enter. The characterizations now run at
+  permitted values (`matching` at 2, 4, 8; `preparation` at 2, 4), and `matching`,
+  `preparation` and `splices` are regenerated; the preparation excess at the new default is
+  0.33–0.45 Δ_tpl², against 0.39–0.50 at the old one. The explorations still compare against
+  m = 1, run through `varsmooth` directly with the same workaround. `doc/dev/template_preparation.rst`,
+  being edited by the user, was not changed and now describes the old `oversample = 1`
+  results in places. One deviation logged.
+- **2026-10-01** — **Characterization 2 absorbs the explorations**, at the user's request.
+  `characterize_matching.py` is rewritten, self-contained so that it does not depend on the
+  exploratory scripts, which are left unchanged. It now produces the content of
+  `convolution_methods.png` as `matching.png`, adding `oversample = 2`, the new default, to
+  `varsmooth` at 1 and 4. It also produces a new `matching_shift.png`, the line-centre shift
+  under the varying kernel against 2kk′. It measures the kinematic-style kernel fit alongside
+  the Gaussian fit and the second moment, and prints them side by side. The Characterization 2
+  section of `doc/dev/template_preparation.rst` is rewritten around the two figures, covering
+  the topics the user named:
+  - the prediction's equation, and what each term means;
+  - the difference between the second moment and the Gaussian fit, and the kernel fit's
+    agreement with the latter;
+  - `varsmooth` against `gaussian_filter1d`;
+  - the dependence on the local dynamic range D;
+  - the line-centre shift;
+  - the uniform-kernel alignment;
+  - the rationale for `oversample ≥ 2` and for never passing `varsmooth` a scalar dispersion.
+
+  At the user's choice, the execution-time scaling, the effect on σ_*, and most of
+  `gaussian_filter1d`'s kernel truncation were left out; the truncation is named in one clause
+  of the figure caption, since the figure shows it.
+- **2026-10-01** — `characterize_resampling.py` converted to the user's figure conventions,
+  which leaves `characterize_preparation.py` and `characterize_splices.py` as the scripts still
+  using the old palette constants. Its log axes keep their minor ticks but drop the minor-tick
+  labels, which matplotlib otherwise prints over the fractional major labels.
+- **2026-10-02** — **A sixth characterization script, `characterize_velscale.py`
+  (`make velscale`)**, promoted from the exploration `explore_velscale_ratio_map.py` at the
+  user's request. It gives context for Characterization 3 by computing, rather than measuring,
+  the range of s = Δ_out/Δ_in that production meets. It has no number of its own; it is
+  documented as a sub-section of Characterization 3.
+  - **The user's framing.** In production v_g and v_c are both fixed, so the only choice is
+    R. A linear library with constant FWHM reduces to three unitless quantities:
+    - F, the FWHM in input pixels;
+    - r = λ₁/λ₀;
+    - g = v_g/v_c, with v_c = cΔλ_in/λ_c and λ_c the arithmetic centre.
+
+    To first order in v/c, s(λ) = (g/R)λ/λ_c. Nyquist sampling, s ≤ F/2, binds only at the
+    red end, giving R = max(1, ⌈4gr/[F(1 + r)]⌉). This is identically what
+    `minimum_velscale_ratio` computes from the narrowest dispersion in km/s, so it is the
+    `'auto'` choice.
+  - **What it found.** Over 1 ≤ r ≤ 3 and 0.5 ≤ g ≤ 2 at F = 2.8, s spans 0.23–1.40. The
+    user's estimate by eye was 0.3–1.5. This sits inside the 1/4–4 that Characterization 3
+    covers. MILES to MaNGA (r = 2.09, g = 1.40) takes R = 2, with s from 0.45 to 0.95.
+  - **The covariance bound.** s ≳ 1 and Nyquist can both hold across the spectrum only if
+    r ≤ F/2.
+  - **The committed table is coarse.** The figure is drawn from a 200 × 200 grid, but the table
+    beside it samples the maps every 0.05 in r and g, to keep the committed ECSV small.
+  - **Pinned** by `test_auto_velscale_ratio_has_a_closed_form_for_a_linear_library`. It checks
+    the closed form against `minimum_velscale_ratio`, and the first-order s(λ) against the
+    exact output borders to 0.1%, for a MILES-like library at ratios 1, 2 and 3.
+  - **The explorations behind it** remain untracked in `doc/scripts/`:
+    - `explore_linear_to_log.py`, the range of s over velocity scale and input length;
+    - `explore_log_sampling.py`, the window 1 ≤ s ≤ F/2 and the regimes against R.
+- **2026-10-02** — **The bottom panel of `resampling.png` now plots every line**, at the user's
+  request, in the style of Characterization 1, rather than the median and 16th–84th
+  percentiles. `resampling.ecsv` now holds one row per line, about 1.7 MB, in the same way
+  `matching.ecsv` holds its per-line measurements. The printed summaries are reduced from it
+  at print time and are unchanged.
+  - **Execution time** is about 110 s, almost all of it in `lsf.fit_line`. There are about
+    41,000 `scipy.optimize.least_squares` fits, at about 2.7 ms each. They use a
+    finite-difference Jacobian and about 25 residual evaluations each, and the scipy
+    machinery dominates each call. `Resample` itself takes about 1 s in total. Nothing was
+    changed to speed it up.
+- **2026-10-02** — **The Step-2 excess is now predicted exactly**, from the user's observation
+  of the beat patterns in the top panel of `resampling.png`. This replaces the earlier
+  explanation, "≈ 2 × Δ²/12", which got the median right but not the dependence on offset.
+  - **Integer s.** Every output border falls the same fraction φ = frac(s·x) into an input
+    pixel, so each output pixel's window is a box of width s convolved with a two-point kernel
+    (1 − φ, φ). That kernel is linear interpolation, with variance **φ(1 − φ)**, peaking at 1/4
+    for any integer s.
+  - **s = p/q.** φ cycles through q equally spaced values, and averaging over them gives
+    **1/6 − [1 − 6φ′(1 − φ′)]/(6q²), with φ′ = frac(p·x)**. This tends to 1/6 as q grows, which
+    is why the median is 1/6.
+  - **Checked against the measurements.** At σ_in ≥ 4 input px the Gaussian fit follows the
+    prediction to within 0.002 Δ_in². At σ_in = 1, as plotted, it departs: 0.278, 0.267 and 0.247
+    at φ = ½ for s = 1, 2 and 3. That is the fit-versus-moment effect, since the line is narrow
+    on the output grid and a two-Gaussian blend.
+  - **Where it is recorded.**
+    - `characterize_resampling.predicted_dvar` implements the prediction, and the top panel
+      overlays it as lines, with the medians as points.
+    - The Characterization 3 "Why" paragraph of `doc/dev/template_preparation.rst` carries the
+      derivation.
+    - `test_resampling_excess_follows_the_flat_pixel_prediction` pins it at three points.
+- **2026-10-02** — **The bottom panel of `resampling.png` now compares extremes and means with
+  the prediction**, at the user's request. It replaces the per-line points.
+  - **Measured.** The panel shows the minimum, mean and maximum over offset and phase for each
+    σ_in.
+  - **Predicted.** It shows one set of prediction lines, the same for both widths.
+    - With the grid offset x uniform, φ′ = frac(p·x) is uniform as well. The expectation is
+      therefore **exactly 1/6 at every s**, and the extremes are 1/6 − 1/(6q²) and
+      1/6 + 1/(12q²).
+    - `predicted_range` implements this.
+    - `lowest_terms` reads s as p/q with q ≤ 12. Any other s, including the irrational grid
+      points `geomspace` produces, is treated as q → ∞, which gives 1/6.
+  - **The saved table changed.** `resampling.ecsv` is again one row per (σ_in, s), now with
+    the minimum, mean and maximum and the three predicted columns. `reduce_rows` also gains
+    `min`, `max` and `mean`.
+  - **Two disagreements the panel shows, left for the user to decide on.**
+    1. *The measured means dip below 1/6 at s = 2, 3 and 4.* Six offsets are not a uniform
+       sample: they reach only a few phases, and the mean of φ(1 − φ) over those phases is
+       0.148 at s = 2 and 4, and 0.125 at s = 3. The measured means are 0.15, 0.12–0.13 and
+       0.135–0.149.
+    2. *Near simple ratios, the measured extremes are wide even where s is irrational.* For
+       example, 0.25 is reached at s ≈ 0.9 or 1.1, while the q → ∞ prediction there is 1/6.
+       The averaging over q phases assumes a line spans many cycles. Close to p/q, φ drifts
+       slowly from pixel to pixel, so a line of finite width sees a partial cycle, and
+       φ(1 − φ) at its local phase. Accounting for this depends on how many output pixels a
+       line spans, and so on σ_in/s.
+- **2026-10-02** — **`characterize_resampling.py`: replotting, more offsets, and a rational-only
+  prediction**, at the user's request.
+  - **Replotting.** `run` now returns both tables already reduced, the bottom one by
+    `reduce_by_ratio`. They are what `resampling.ecsv` and `resampling_by_offset.ecsv` hold.
+    `--replot` reads them back, if both are present, and only redraws the figure, in about 5 s.
+    The redraw is byte-identical to the full run. The prediction is quick to compute, so it is
+    recomputed every time and no longer stored.
+  - **21 offsets in the bottom panel**, the same `np.arange(21)/20` as the top. A full run now
+    takes about 5.5 min, against about 2 min before.
+    - At integer s the measured means rise to 0.154–0.165, from as low as 0.12.
+    - They still sit slightly below 1/6, because the sample counts both x = 0 and x = 1, which
+      are the same phase. Over these 21 offsets the expectation is 0.158 at s = 1, and 0.152 at
+      s = 4.
+  - **Prediction only at rational s.** It is now plotted at s = k/12, 3 ≤ k ≤ 48, with the
+    expectation as a line and the extremes as points. The simulated ratios are unchanged.
+    `lowest_terms` now raises `ValueError` for a ratio that is not p/q with q ≤ 12, rather than
+    returning the q → ∞ limit.
+  - **The document** gains the uniform-offset expectation and a paragraph on the limitation
+    to rational s.
+- **2026-10-02** — In the bottom panel of `resampling.png`, the predicted range is now drawn as
+  thin vertical bars from minimum to maximum, and the predicted expectation line is dropped.
+  The expectation is 1/6 at every s, which the dashed reference line already shows.
+  Regenerated with `--replot`.
+- **2026-10-02** — **A full-pipeline check of the predictions, MILES to MaNGA**, in the new
+  exploratory script `explore_miles_to_manga.py`. The user intends it as the basis for
+  recasting Characterization 4.
+  - **Setup.**
+    - The templates are a MILES-like comb: linear 0.9 Å pixels from 3540.5 Å, FWHM 2.51 Å.
+    - The galaxy is MaNGA-like: Δlog λ = 10⁻⁴, with σ falling linearly from 80 km/s at 4000 Å
+      to 55 km/s at 9000 Å.
+    - `prepare` runs at the nominal settings: `velscale_ratio = 'auto'`, which selects 1
+      because Step 1 broadens the LSF to the galaxy's, and `varsmooth_oversample = 2`.
+    - Each line is fit with a pixel-integrated Gaussian. The prediction is E₁ from
+      Characterization 2, with k clipped at 0.1 and D = k_max/k, plus 1/6 from
+      Characterization 3.
+  - **The reference is the applied dispersion, σ_tpl² + k², not `idsp`.** Below about
+    4000 Å MILES is broader than the galaxy, and 524 native pixels are unmatched at the
+    default `sigma_floor = 0`. There `idsp` reports the galaxy's dispersion, while the kernel
+    sits at its floor. That bookkeeping gap is separate from the step effects, and on its own
+    it makes the prepared lines up to 17% broader than reported. The affected lines are
+    marked in the figure.
+  - **Result.** 179 lines.
+    - The measured excess has mean 0.344 and median 0.349 Δ_tpl², against a predicted median
+      of 0.354. Measured minus predicted has median +0.006, with a 16–84% range of ±0.06.
+    - The scatter is the Step 2 phase dependence, since s runs from 0.93 to 1.89 and passes
+      near 1, 3/2 and so on.
+    - In σ, the prepared lines are 3–13% broader than applied, with a median of 7.8%.
+  - **What it does not yet do.**
+    - It does not predict the local Step 2 excess at each line, only its expectation.
+    - It does not apply a correction.
+  - **At `velscale_ratio = 2`.** This is the ratio the choice would give from MILES's own
+    resolution, without the broadening of Step 1. The user asked for it, and it is run with
+    `--velscale-ratio 2`, writing `miles_to_manga_r2.*`.
+    - s runs from 0.46 to 0.94.
+    - Mean excess 0.341 Δ_tpl², and measured minus predicted has median −0.001. The scatter
+      halves, to a 16–84% range of −0.033 to +0.028, because s < 1 stays away from the integers
+      except at the red end, where it approaches 1.
+    - In σ: +4.6% to +10.6%, median +7.7%.
+    - The expectation is unchanged, as Characterization 3 predicts. Only the phase scatter
+      depends on R.
+- **2026-10-02** — **`explore_miles_to_manga.py` now runs at `velscale_ratio = 2` by default**,
+  which the user chose to continue with, and repeats the experiment at **10 comb positions**,
+  each shifted by a tenth of the line spacing. Its products are now named by the ratio,
+  `miles_to_manga_r2.*`, and the bottom (context) panel is removed.
+  - **Over 1794 lines.** Measured minus predicted has median +0.002 and mean +0.002, with a
+    16–84% range of −0.027 to +0.029 Δ_tpl². The per-shift medians range from −0.001 to
+    +0.007. In σ the prepared lines are +3.4% to +10.6% broader than applied, with a median
+    of +7.9%.
+  - **The Step 2 beat structure is now visible as an envelope against wavelength.**
+    - It is tight where s is far from simple ratios, about 4300–5000 Å with s ≈ 0.55–0.64.
+    - It widens near s = 3/4, at about 5860 Å, and most of all toward s → 1 at the red end.
+    - There is also a slight systematic shortfall at 4000–4300 Å, where the kernel lifts off
+      its floor.
+  - **The benefit of s < 1**, at the user's request, is noted in the script docstring and in
+    "The range of s in production" in `doc/dev/template_preparation.rst`. For s < 1 the
+    Step 2 excess stays near 1/6 except near simple ratios, so the prepared widths are more
+    uniform and a correction more accurate. This offsets the added covariance.
+- **2026-10-02** — **The 4000–4300 Å shortfall in `miles_to_manga_r2.png` is Characterization 2's
+  shortfall at small k**, as the user expected. It is the Gaussian fit seeing less than the
+  second moment for a narrow kernel on a narrow line. Confirmed with a scratch check that
+  applies Step 1 alone on the native MILES grid, with σ_tpl = 1.18 px.
+  - **Step 1 alone.** Fit minus E₁ is −0.009 to −0.012 px² for k = 0.15–0.4, which is
+    4040–4300 Å. The second moment matches E₁ to 0.002.
+  - **Characterization 2, varying kernel at m = 2, fit minus prediction for k = 0.15–0.4.**
+    σ_in = 0.5 gives −0.044 to −0.052, σ_in = 1 gives −0.014 to −0.019, and σ_in = 2 gives
+    −0.003 to −0.005. The MILES lines, at 1.18 px, sit between the last two, as they should.
+  - **Full pipeline, fit minus prediction over 4000–4300 Å.** −0.007 to −0.010, the same
+    shortfall.
+  - **Below 4000 Å.** Step 1 alone is −0.009, but the full pipeline is +0.004. The difference
+    is the local Step 2 excess near s = 1/2, at about 3910 Å, where the phase drifts slowly
+    and the excess need not average to 1/6 over a narrow range of wavelength.
+- **2026-10-02** — **Characterization 4 is rewritten around the MILES-to-MaNGA case**, at the user's
+  request. The user's reasoning: it is narrower in scope than the old grid of configurations,
+  but it gives a direct, tangible example of what preparation does to the resolution.
+  - **The script.** `explore_miles_to_manga.py` was moved over `characterize_preparation.py`.
+    It writes `preparation.png` and `preparation.ecsv`, the latter one row per line, about
+    420 kB, with `velscale_ratio = 2` and 10 comb positions as the defaults. Another ratio
+    writes `preparation_r<R>.*`, so exploration cannot overwrite the committed figure.
+  - **What is lost.** The old configuration grid is gone:
+    - galaxy-to-template pixel ratios of 1.3–4;
+    - `velscale_ratio` from 1 to 6;
+    - `varsmooth_oversample` 2 and 4.
+
+    Its conclusions now follow from the predictions of Characterizations 2 and 3 instead.
+  - **The test.** `test_prepared_templates_are_broader_than_reported` is replaced by
+    `test_prepared_templates_follow_the_predicted_excess`. It runs one comb position of the
+    MILES-to-MaNGA case and checks that every matched line is broader than applied, and that
+    the mean of measured minus predicted is within 0.01 Δ_tpl². It takes 0.6 s.
+  - **The documentation.** In `doc/dev/template_preparation.rst`, the Characterization 4
+    section is rewritten. The Summary and "What follows" carry the new numbers:
+    - 3–11% in σ, 8% in the median;
+    - the predictions account for the excess to 0.002 Δ_tpl².
+
+    "What follows" also makes three new points:
+    - The analytic prediction is now the validated option for the correction.
+    - `velscale_ratio` keeping s < 1 reduces the scatter, though not the mean.
+    - The `sigma_floor = 0` matching gap below about 4000 Å is a separate issue.
+  - **A release-note line** was added.
+- **2026-10-02** — **A new rule, at the user's request, now in `CLAUDE.md`'s Conventions: never use
+  NaN intentionally.** A value that is invalid, missing or to be ignored is flagged with a
+  mask. A NaN always signifies a computational error.
+  - **The sweep.**
+    - `Spectra._flag_invalid` already converts non-finite input to the `INVALID` bit, so it
+      conforms, and its test injects NaN only as bad external input.
+    - `characterize_resampling.reduce_rows` silently dropped non-finite measurements and filled
+      empty reductions with NaN. It now raises `ValueError` for either, since both can only be
+      a failed measurement.
+    - `explore_log_sampling.py` broke plotted lines with NaN. It now uses `numpy.ma` masked
+      arrays.
+  - **The figures are unchanged.**
+  - **Prompted by** the finding that `prepare` turns a single NaN library pixel into an
+    all-NaN prepared spectrum. That is addressed separately, with the Characterization 5
+    rework.
+- **2026-10-02** — **The library's own mask, `convolution_mask_growth`, `TPL_MASKED`, and
+  Characterization 5 reworked**, at the user's direction.
+  - **The finding.** `prepare` ignored the library's mask entirely: it was neither used before
+    the convolution nor carried to the output.
+    - With 10 masked pixels of NaN, all 3875 prepared pixels came out NaN, because
+      `varsmooth`'s FFT spreads it everywhere.
+    - With masked zeros, 30 prepared pixels were corrupted and none flagged.
+  - **The user's decisions.**
+    - *Interpolation.* Interpolating over masked pixels is needed only where the flux is not
+      finite. Non-finite flux is to be rejected when a spectrum is read, as part of the planned
+      `specutils` I/O interface, so `prepare` does not handle it.
+    - *Extreme finite values.* They are likewise left to the I/O interface, and `prepare`
+      raises nothing for them.
+    - *Masked finite pixels* are convolved as they are, and the prepared templates are masked
+      around them.
+    - *Naming.* `jump_guard` is renamed `convolution_mask_growth`, with documentation that
+      enumerates its uses. The new output bit is `TPL_MASKED`.
+  - **Not yet implemented, a recorded intention.** Reading a spectrum, of any kind, should
+    raise on non-finite flux. Extreme finite values are also a matter for reading.
+  - **The implementation.**
+    - `_guard_band` is generalized to `_grow_regions`, which grows native regions from border
+      `starts[i]` to `ends[i]`. A break at border b is the region (b, b). The kernel is the
+      largest across the region and its two neighbouring pixels, and the growth is at least one
+      native pixel.
+    - `_masked_runs` finds the runs of masked pixels in one template.
+    - `prepare` grows each template's runs separately and sets `TPL_MASKED`, which is appended
+      to `SpectrumBitMask`.
+    - The parameter is renamed in `TemplatePar`, in `prepare`, in `preparation_key`, in the
+      tests and in the documentation, and `prepare`'s Notes gain a section on masked library
+      pixels.
+  - **Tests.** Four new tests, and the guard-band tests are updated:
+    - growth by the widest kernel a run touches;
+    - runs found at the ends of the spectrum and apart;
+    - `TPL_MASKED` set only in the masked template, with neither jump flag;
+    - a masked gap of zeros changing the prepared flux by less than 10⁻³ outside the flagged
+      region.
+
+    517 tests pass.
+  - **Characterization 5, reworked.**
+    - *A third experiment:* a 0.5 Å masked gap of zeros.
+    - *A third row:* the fractional error of a prepared flat continuum. The combs sit on a zero
+      background, and preparation is linear, so a gap's damage to the continuum does not show
+      in the lines. The continuum table is written as `splices_continuum.ecsv`.
+    - *Results.* The jumps are as before, with outside departures under 0.11% and 0.09%. Next
+      to the gap, lines depart by up to 0.7% only within ±1.7 kernel σ, while the gap's edges
+      are at ±1.4. The continuum error is 82% at the gap's centre and at most 1.3 × 10⁻⁴
+      outside the masked region. The jumps leave a flat continuum unchanged to round-off.
+    - *The script* is converted to the figure conventions, and the stale "characterization 4"
+      reference becomes E₁ + 1/6.
+    - *`SERIES`*, the old palette, is removed from `characterize_common.py`, since no script
+      uses it any more.
+    - *The document.* The Characterization 5 section describes what `prepare` does and why,
+      along with the new setup, results and caption. The Summary bullet and the scripts table
+      are updated.
+- **2026-10-02** — **The preparation excess is corrected for, by default.** Design settled with the
+  user before implementation; one deviation logged.
+  - **The user's design.**
+    - *Step 1* is corrected *in the resolution matching*, so the target is achieved rather
+      than corrected for afterwards. The correction is optional, so that Characterization 4
+      can be reproduced.
+    - *Step 2's excess* is an artifact of `Resample`'s algorithm, not a failure of an explicit
+      goal. So it is quoted only in `Resample`'s docstring, and `prepare` accounts for it by
+      lowering the target it passes to `match_resolution`.
+    - *`match_resolution` knows nothing about downstream steps.* A first draft gave it a
+      `downstream_variance` argument; the user rejected that.
+  - **The user's answers to the open questions.**
+    - Target the second moment.
+    - Make the Step 2 prediction a method option, `'expectation'` or `'local'`.
+    - Use one `TemplatePar` boolean.
+    - In unmatched regions, report the resolution achieved.
+    - Characterization 6 keeps the Characterization 4 setup, without the uncorrected results.
+  - **Implementation in `dc3/core/resolution.py`.**
+    - `varsmooth_excess` is public, moved from `characterize_matching.py`, which now imports
+      it.
+    - `match_resolution(..., varsmooth_oversample=None)`, when given, chooses k so that
+      g(k) = k² + E₁(k) makes up the difference. g increases monotonically and is inverted
+      by interpolating a 4096-point table. D couples it to k_max, so the kernel is iterated
+      until k_max settles, in a few iterations.
+    - The floor variance g(ε) enters `dvar_inst` and the unmatched pixels. The construction
+      is factored into `_offset_and_kernel`, which the uncorrected path also uses,
+      unchanged.
+    - `ResolutionMatch.achieved` gives the dispersion carried after convolution, under the
+      model used.
+  - **Implementation in `dc3/core/resample.py`.** `Resample`'s docstring gains "The effect on
+    spectral resolution": φ(1 − φ), the p/q formula, and the 1/6 expectation.
+  - **Implementation in `dc3/templates.py`.**
+    - `TemplatePar.correct_lsf_excess` (default True) and `resample_excess_method` (default
+      `'local'`), added to `prepare` and to the cache key.
+    - `prepare` first finds the nominal resolution from an uncorrected match, run silently,
+      and uses it to choose `velscale_ratio`. It then builds the output grid with the new
+      `_resample` helper. That grid depends only on the grids, so it is known before Step 1.
+    - It predicts E₂ per native pixel with `_resample_variance`, and matches to
+      σ_target² − E₂Δ_tpl² with the Step 1 correction.
+    - It reports √(achieved² + E₂Δ_tpl²). Without matching, it reports the library's own
+      `idsp` with E₂ added.
+    - `'local'` computes each output border's phase within its native pixel and averages
+      φ(1 − φ) with a Gaussian weight of the line's width in output pixels. Borders beyond
+      the native range are excluded; including them spread spurious zeros over about ten
+      pixels at each end, which a test caught.
+    - `prepare`'s Notes gain a section on the correction.
+  - **Tests.** 528 pass.
+    - New: `varsmooth_excess` limits; the corrected kernel applying the target; unmatched
+      pixels reporting what they achieve; the uncorrected achieved value; the local E₂ being
+      exactly 0 or ¼ on aligned grids; corrected reporting of the target; the corrected kernel
+      being narrower; the cache key covering both new parameters; and
+      `test_corrected_templates_carry_the_reported_resolution`.
+    - Updated: the unmatched-preparation and one-segment tests, which now compare the
+      uncorrected and corrected cases, and the Characterization 4 pin, which now runs
+      uncorrected.
+  - **Characterization 6, `characterize_correction.py` (`make correction`).**
+    - *Setup:* Characterization 4's, with the correction on, for both methods.
+    - *Against the reported dispersion, matched lines:* `'local'` gives −0.02% median and
+      −1.6 to +1.8% in σ; `'expectation'` gives −0.01% median and −2.9 to +2.3%.
+    - *Unmatched lines,* now below about 4460 Å: −0.15% and −0.12% median. That is the
+      Gaussian fit's shortfall at the floor kernel.
+    - *In Δ_tpl²,* the mean is +0.002 for matched lines and −0.006 for unmatched, against
+      +0.34 uncorrected.
+    - *The local method removes the slow-drift structure* near s = ½ and s → 1. About
+      ±0.05 Δ_tpl² of line-to-line scatter remains, which depends on each line's position
+      relative to the borders.
+  - **Knock-on changes.**
+    - `characterize_preparation.py` passes `correct_lsf_excess=False`, and reproduces its
+      numbers exactly.
+    - `make splices` was regenerated with the correction. The extents are unchanged, the
+      departures outside are now below 0.12%, 0.04% and 0.04%, and the table is updated.
+  - **The document.** A new "Correcting the prepared resolution" section, with Characterization
+    6, sits before "What follows", which is rewritten. The Summary, the introduction, the
+    Characterization 4 question and the scripts table are updated. A release-note line was
+    added.
+- **2026-10-02** — **A correction to the 2026-10-02 `velscale` entry above: the map's R is not
+  what `'auto'` selects.**
+  - **The map** (`characterize_velscale.py`) takes F to be the library's own resolution, 2.8
+    MILES pixels.
+  - **What `'auto'` uses.** `prepare` decides the ratio after Step 1 has matched the templates
+    to the galaxy, so `'auto'` tests the matched resolution, which is broader wherever the
+    galaxy's is. For MILES to MaNGA, that is 63 km/s at 7410 Å against MILES's 43, or
+    F = 4.1, so `'auto'` gives R = 1 where the map gives 2. The map's R is an upper bound on
+    `'auto'`.
+  - **How the user found it.** The user asked why `'auto'` would not choose 2.
+  - **What was corrected.**
+    - "The range of s in production" in `doc/dev/template_preparation.rst`: the claim that
+      the map gives what `'auto'` selects is removed, a "Which line-spread function"
+      paragraph is added, and the caption and the R = 2 note are updated. Characterizations 4
+      and 6 set 2 explicitly, for the s < 1 scatter, overriding `'auto'`.
+    - The docstring of `characterize_velscale.py`.
+    - The pinned test is renamed
+      `test_nyquist_velscale_ratio_has_a_closed_form_for_a_constant_fwhm`, and its docstring
+      says it checks `minimum_velscale_ratio` for a given resolution, not `'auto'` in
+      `prepare`.
+  - **Left as it was:** the figure, which is unchanged, and the old name in the entry above.
+- **2026-10-02** — **A review pass over `doc/dev/template_preparation.rst`**, at the user's
+  request. Text only; no code changed.
+  - **Corrected.**
+    - *The `UNMATCHED` bit.* Unmatched pixels are recorded in `ResolutionMatch.unmatched` and
+      kept by default. The bit is set only by `mask_unmatched_idsp`, since a set bit masks
+      the pixel; the user chose to correct the text rather than the code.
+    - *The Summary's first bullet* was in a stale present tense.
+    - *The Motivation's count of experiments* now lists all six characterizations, and fixes
+      a typo.
+    - *Methods'* claim that every result is a median over phase.
+    - *Characterization 4* now notes that its reporting gap belongs to the uncorrected
+      pipeline.
+    - *Characterization 5* now says it runs with the correction on.
+    - *A typo:* "primarilyt".
+  - **Added.**
+    - *Terms:* a glossary of the symbols used throughout.
+    - *The Summary:* bullets on s < 1 in production and on library-mask handling and
+      non-finite flux.
+    - *The correction section:* a note that the `'local'` weighting is a model supported
+      empirically, not derived.
+    - *"What follows":*
+      - why a positive `dvar_inst` needs every pixel matched;
+      - the uncorrected line-centre shift;
+      - the pros and cons of `velscale_ratio = 'auto'`. The user keeps the current
+        Nyquist-minimum behaviour, and notes that the covariance matters less because only
+        the noise-free templates are resampled, never the galaxy.
+  - **Left as it is:** the Characterization numbering, with `velscale` sharing 3, at the
+    user's choice.

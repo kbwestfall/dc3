@@ -461,4 +461,14 @@ format to ecsv, but ecsv is preferred over FITS.
 
  - revisit allowing `kernel_sigma` to be `None` in `resolution.py:ResolutionMatch`.
 
+ - Only include the links.rst file in the modules that need it.
+
  - Adopt a src layout instead of a flat layout.
+ - Always use American English spelling.
+ - Import each module on its own line.
+
+ - Assess test coverage at the end of each development phase.
+
+ - It will be important to remove all the gymnastics around the off-by-one error
+   in `varsmooth` as soon as possible!
+

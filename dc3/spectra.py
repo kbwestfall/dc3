@@ -2,8 +2,15 @@ r"""
 The internal representation of a set of spectra.
 
 This is the object the fit actually works on.  It is deliberately plain: plain
-contiguous ``float64`` arrays on a shared logarithmic wavelength grid, with the
-units fixed by convention and documented rather than carried.
+contiguous ``float64`` arrays on a shared wavelength grid, a
+:class:`~dc3.core.sampling.SpectralGrid`, with the units fixed by convention and
+documented rather than carried.
+
+A :class:`Spectra` set may be sampled however its grid describes, because
+template libraries arrive sampled however their authors chose, and resampling
+them on ingest would resample them twice.  The galaxy data may not:
+:class:`GalaxySpectra` requires a logarithmic grid, since de-redshifting by a
+whole number of pixels and the Fourier-space velocity shift both depend on it.
 
 Why not :class:`specutils.Spectrum`
 -----------------------------------
@@ -63,17 +70,17 @@ Quantity       Convention
     converting in both directions may outweigh what the convention buys.  The
     decision is deferred; only this class and its ingest functions would change.
 
-.. include:: include/links.rst
+.. include:: ../include/links.rst
 """
 
 import numpy as np
 
-from .core import sampling
 from .core.bitmask import BitMask, BitMaskArray
+from .core.sampling import SpectralGrid
 from .pkg.exceptions import DC3Error
 
 
-__all__ = ['SpectrumBitMask', 'SpectrumMask', 'Spectra']
+__all__ = ['GalaxySpectra', 'SpectrumBitMask', 'SpectrumMask', 'Spectra']
 
 
 class SpectrumBitMask(BitMask):
@@ -93,6 +100,9 @@ class SpectrumBitMask(BitMask):
         'REGION': 'Pixel falls in a masked spectral region',
         'NOIDSP': 'Pixel has no usable instrumental dispersion',
         'UNMATCHED': 'Template resolution could not be matched at this pixel',
+        'SAMP_JUMP': 'Pixel is within the guard band of a jump in the template sampling',
+        'RES_JUMP': 'Pixel is within the guard band of a jump in the template resolution',
+        'TPL_MASKED': 'Pixel is within the grown mask of pixels masked in the template library',
     }
 
 
@@ -104,19 +114,24 @@ class SpectrumMask(BitMaskArray):
 
 class Spectra:
     r"""
-    A set of spectra sharing one logarithmic wavelength grid.
+    A set of spectra sharing one wavelength grid.
 
     A single spectrum is the ``nspec == 1`` case; the arrays are always 2-D
     internally, so that nothing downstream needs to special-case it.
+
+    The grid may be of any kind a :class:`~dc3.core.sampling.SpectralGrid`
+    describes.  The quantities that exist only for a logarithmic grid --
+    :attr:`log10lam0`, :attr:`dloglam` and :attr:`velscale` -- raise for any
+    other; :attr:`pixel_velocity` gives the width of each pixel whatever the
+    kind.
 
     Parameters
     ----------
     flux : :class:`numpy.ndarray`
         Flux, of shape ``(nspec, npix)`` or ``(npix,)``.
-    log10lam0 : float
-        :math:`\log_{10}` of the first pixel's central wavelength.
-    dloglam : float
-        Pixel size in :math:`\log_{10}\lambda`.
+    grid : :class:`~dc3.core.sampling.SpectralGrid`
+        The wavelength grid, with ``npix`` pixels.  Grids are immutable, so
+        any number of sets may share one.
     ivar : :class:`numpy.ndarray`, optional
         Inverse variance of ``flux``, with the same shape.  **Only the galaxy
         carries errors**; templates are treated as noise-free throughout, which
@@ -143,23 +158,31 @@ class Spectra:
         Instrumental dispersion in km/s, shape ``(nspec, npix)``.
     cont : :class:`numpy.ndarray`, None
         Continuum, shape ``(nspec, npix)``.
-    log10lam0 : float
-        :math:`\log_{10}` of the first pixel's central wavelength.
-    dloglam : float
-        Pixel size in :math:`\log_{10}\lambda`.
     nspec : int
         Number of spectra.
     npix : int
         Number of pixels in each spectrum.
+
+    Raises
+    ------
+    DC3Error
+        Raised if ``grid`` is not a :class:`~dc3.core.sampling.SpectralGrid`,
+        or does not have one pixel for each flux element, or if any array has
+        the wrong shape.
     """
 
-    def __init__(self, flux, log10lam0, dloglam, ivar=None, mask=None, idsp=None, cont=None):
+    def __init__(self, flux, grid, ivar=None, mask=None, idsp=None, cont=None):
         self.flux = self._as_2d(flux, 'flux')
         self.nspec, self.npix = self.flux.shape
-        if dloglam <= 0:
-            raise DC3Error(f'The logarithmic pixel size must be positive; got {dloglam}.')
-        self.log10lam0 = float(log10lam0)
-        self.dloglam = float(dloglam)
+        if not isinstance(grid, SpectralGrid):
+            raise DC3Error(
+                f'The wavelength grid must be a SpectralGrid; got {type(grid).__name__}.  Build '
+                'one with SpectralGrid.from_log_spacing, from_linear_spacing or from_vector, or '
+                'construct the set with from_wave.'
+            )
+        if grid.npix != self.npix:
+            raise DC3Error(f'The grid has {grid.npix} pixels, but flux has {self.npix}.')
+        self._grid = grid
 
         self.ivar = None if ivar is None else self._as_2d(ivar, 'ivar', match=True)
         self.cont = None if cont is None else self._as_2d(cont, 'cont', match=True)
@@ -293,12 +316,13 @@ class Spectra:
     # Alternative constructors
     # ------------------------------------------------------------------
     @classmethod
-    def from_wave(cls, wave, flux, **kwargs):
+    def from_wave(cls, wave, flux, borders=None, tol=1e-3, **kwargs):
         """
         Construct from an explicit wavelength vector.
 
-        The vector is checked for logarithmic sampling and reduced to the two
-        grid parameters; it is not stored.
+        The kind of sampling is determined from the vector by
+        :meth:`~dc3.core.sampling.SpectralGrid.from_vector`, which replaces a
+        regular vector by the uniform grid fit to it.
 
         Parameters
         ----------
@@ -306,6 +330,12 @@ class Spectra:
             Wavelengths of the pixel centres.
         flux : :class:`numpy.ndarray`
             Flux.
+        borders : :class:`numpy.ndarray`, optional
+            The ``npix + 1`` pixel borders.  Strongly recommended for an
+            irregular grid; see :class:`~dc3.core.sampling.SpectralGrid`.
+        tol : float, optional
+            The tolerance, in pixels, used to determine the sampling; see
+            :func:`~dc3.core.sampling.sampling_type`.
         **kwargs
             Passed to the constructor.
 
@@ -317,39 +347,58 @@ class Spectra:
         Raises
         ------
         DC3Error
-            Raised if the wavelength vector is not logarithmically sampled, or
-            its length does not match the flux.
+            Raised if the wavelength vector cannot describe a grid, or its
+            length does not match the flux.
         """
-        log10lam0, dloglam = sampling.grid_from_wave(wave)
         _flux = np.atleast_2d(np.asarray(flux, dtype=float))
         if _flux.shape[-1] != np.asarray(wave).size:
             raise DC3Error(
                 f'flux has {_flux.shape[-1]} pixels but wave has {np.asarray(wave).size}.'
             )
-        return cls(flux, log10lam0, dloglam, **kwargs)
+        return cls(flux, SpectralGrid.from_vector(wave, borders=borders, tol=tol), **kwargs)
 
     # ------------------------------------------------------------------
     # The wavelength axis
     # ------------------------------------------------------------------
     @property
-    def wave(self):
+    def grid(self):
         """
-        The wavelengths of the pixel centres.
+        The wavelength grid, a :class:`~dc3.core.sampling.SpectralGrid`.
 
-        Computed from the grid parameters on each access rather than stored, so
-        that the grid cannot drift out of step with the arrays.
+        Read-only: a set is relabelled onto a new grid with :meth:`copy`, which
+        checks that the new grid fits the arrays.
         """
-        return sampling.log_wavelength_grid(self.log10lam0, self.dloglam, self.npix)
+        return self._grid
+
+    @property
+    def wave(self):
+        """The wavelengths of the pixel centres, in angstroms.  Read-only."""
+        return self._grid.wave
 
     @property
     def loglam(self):
-        """The base-10 logarithm of the pixel centres."""
-        return self.log10lam0 + self.dloglam * np.arange(self.npix, dtype=float)
+        """The base-10 logarithm of the pixel centres.  Read-only."""
+        return self._grid.loglam
+
+    @property
+    def pixel_velocity(self):
+        """The width of each pixel in velocity, in km/s.  Read-only."""
+        return self._grid.pixel_velocity
+
+    @property
+    def log10lam0(self):
+        r""":math:`\log_{10}` of the first pixel centre.  Logarithmic grids only."""
+        return self._grid.log10lam0
+
+    @property
+    def dloglam(self):
+        r"""The pixel size in :math:`\log_{10}\lambda`.  Logarithmic grids only."""
+        return self._grid.dloglam
 
     @property
     def velscale(self):
-        """The velocity scale of the grid, in km/s per pixel."""
-        return sampling.velscale(self.dloglam)
+        """The velocity scale of the grid, in km/s per pixel.  Logarithmic grids only."""
+        return self._grid.velscale
 
     @property
     def shape(self):
@@ -362,9 +411,12 @@ class Spectra:
 
     def __repr__(self):
         """A short summary of the set."""
+        sampling = (
+            f'{self.velscale:.2f} km/s/pix' if self._grid.is_log else f'{self._grid.kind} grid'
+        )
         return (
             f'<{type(self).__name__}: {self.nspec} spectra x {self.npix} pixels, '
-            f'{self.wave[0]:.1f}-{self.wave[-1]:.1f} A, {self.velscale:.2f} km/s/pix>'
+            f'{self.wave[0]:.1f}-{self.wave[-1]:.1f} A, {sampling}>'
         )
 
     # ------------------------------------------------------------------
@@ -498,17 +550,29 @@ class Spectra:
         """
         return {}
 
-    def copy(self):
+    def copy(self, grid=None):
         """
-        Return an independent copy.
+        Return an independent copy, optionally relabelled onto a new grid.
+
+        Relabelling moves no data: the arrays are copied unchanged and only the
+        wavelengths assigned to their pixels change.  That is what
+        de-redshifting by a whole number of pixels needs; see
+        :func:`~dc3.core.deredshift.to_rest_frame`.
+
+        Parameters
+        ----------
+        grid : :class:`~dc3.core.sampling.SpectralGrid`, optional
+            The grid of the copy, which must have the same number of pixels.
+            If None, the copy keeps this set's grid, which it may share since
+            grids are immutable.
 
         Returns
         -------
         Spectra
-            A copy sharing nothing with this set.
+            A copy sharing no arrays with this set.
         """
         return type(self)(
-            self.flux.copy(), self.log10lam0, self.dloglam,
+            self.flux.copy(), self._grid if grid is None else grid,
             ivar=None if self.ivar is None else self.ivar.copy(),
             mask=SpectrumMask(self.mask.mask.copy()),
             idsp=None if self.idsp is None else self.idsp.copy(),
@@ -532,10 +596,52 @@ class Spectra:
         """
         select = [index] if isinstance(index, (int, np.integer)) else index
         return type(self)(
-            self.flux[select], self.log10lam0, self.dloglam,
+            self.flux[select], self._grid,
             ivar=None if self.ivar is None else self.ivar[select],
             mask=SpectrumMask(np.atleast_2d(self.mask.mask[select]).copy()),
             idsp=None if self.idsp is None else self.idsp[select],
             cont=None if self.cont is None else self.cont[select],
             **self._derived_kwargs(),
         )
+
+
+class GalaxySpectra(Spectra):
+    r"""
+    The galaxy spectra to be fit, on a logarithmic wavelength grid.
+
+    A :class:`Spectra` set whose grid must be uniform in
+    :math:`\log_{10}\lambda`.  That is required rather than preferred, for two
+    reasons: on such a grid a Doppler shift is a pure translation, which lets
+    the galaxy be de-redshifted by a whole number of pixels
+    (:mod:`~dc3.core.deredshift`) and the model be shifted by a phase ramp in
+    Fourier space, neither of which redistributes flux.  The galaxy's flux
+    distribution is never redistributed, so ``dc3`` cannot resample it onto
+    such a grid itself; spectra sampled otherwise must be resampled before they
+    are ingested.
+
+    Parameters
+    ----------
+    flux : :class:`numpy.ndarray`
+        Flux, of shape ``(nspec, npix)`` or ``(npix,)``.
+    grid : :class:`~dc3.core.sampling.SpectralGrid`
+        The wavelength grid, which must be logarithmic.
+    **kwargs
+        Passed to :class:`Spectra`.
+
+    Raises
+    ------
+    DC3Error
+        Raised if the grid is not logarithmic, or for any reason
+        :class:`Spectra` raises.
+    """
+
+    def __init__(self, flux, grid, **kwargs):
+        super().__init__(flux, grid, **kwargs)
+        if not self.grid.is_log:
+            raise DC3Error(
+                f'The galaxy spectra must be sampled uniformly in log10(wavelength); this grid '
+                f'is {self.grid.kind}.  A Doppler shift is a pure translation only on a '
+                'logarithmic grid, which is what lets the galaxy be de-redshifted without '
+                'redistributing its flux.  Resample the spectra onto a logarithmic grid before '
+                'ingesting them.'
+            )

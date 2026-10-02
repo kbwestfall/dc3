@@ -38,7 +38,7 @@ fitted simply add.
     grid, or by keeping the arrays and relabelling the grid.  The two are
     equivalent, except that rolling discards ``n_shift`` pixels off one end.
     Relabelling is therefore strictly better, and it is what is done here: only
-    :attr:`~dc3.spectra.Spectra.log10lam0` changes.
+    the wavelength grid changes.
 
     This also disposes of the instrumental dispersion automatically.  In
     velocity units the dispersion is independent of redshift for each pixel, so
@@ -214,22 +214,23 @@ def to_rest_frame(spectra, shift):
     r"""
     Return a copy of a spectrum set relabelled into the approximate rest frame.
 
-    Only :attr:`~dc3.spectra.Spectra.log10lam0` changes.  The flux, inverse
+    Only the grid changes, by
+    :meth:`~dc3.core.sampling.SpectralGrid.shifted`.  The flux, inverse
     variance, mask and instrumental dispersion are carried across untouched,
     which is the whole point: a whole-pixel shift on a logarithmic grid is a
     relabelling, not a resampling.
 
     Parameters
     ----------
-    spectra : :class:`~dc3.spectra.Spectra`
-        The observed-frame spectra.
+    spectra : :class:`~dc3.spectra.GalaxySpectra`
+        The observed-frame spectra, on a logarithmic grid.
     shift : DeRedshift
         The shift to apply, from :func:`pixel_shift`.
 
     Returns
     -------
-    :class:`~dc3.spectra.Spectra`
-        The relabelled spectra.
+    :class:`~dc3.spectra.GalaxySpectra`
+        The relabelled spectra, of the same type as ``spectra``.
 
     Raises
     ------
@@ -243,6 +244,4 @@ def to_rest_frame(spectra, shift):
             f'sampled at {spectra.dloglam}.  Recompute the shift for this grid; applying it as '
             'it stands would move the spectra to the wrong rest wavelengths.'
         )
-    out = spectra.copy()
-    out.log10lam0 -= shift.n_shift * shift.dloglam
-    return out
+    return spectra.copy(grid=spectra.grid.shifted(-shift.n_shift))

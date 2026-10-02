@@ -988,23 +988,28 @@ def document_parameters(par, placeholder='{parameters}', width=79):
     The decorated function is one that a :class:`ParSet` is expanded over, as
     ``func(..., **par.to_kwargs())``.  Its docstring carries a ``placeholder``
     where the NumPy-style entries for those keywords belong, and this replaces
-    it with entries generated from the parameter set:
+    it with entries generated from the parameter set.  For example, a function
+    declared as
 
     .. code-block:: python
 
         @document_parameters(TemplatePar)
         def prepare(library, galaxy, velscale_ratio=1, epsilon_sigma=0.1):
-            \"\"\"
-            Run the preparation pipeline.
+            ...
 
-            Parameters
-            ----------
-            library : TemplateLibrary
-                The raw templates.
-            galaxy : :class:`~dc3.spectra.Spectra`
-                The galaxy spectra.
-            {parameters}
-            \"\"\"
+    documents its positional arguments by hand in the Parameters section of its
+    docstring, and ends that section with the placeholder alone on a line::
+
+        library : TemplateLibrary
+            The raw templates.
+        galaxy : :class:`~dc3.spectra.Spectra`
+            The galaxy spectra.
+        {parameters}
+
+    (The example shows only the section's entries, not its heading: ``numpydoc``
+    recognizes a section heading even inside a code block, so an example
+    heading here would be read as a second Parameters section of *this*
+    docstring.)
 
     The parameter set is the single source of the text, so the description a
     user reads in the configuration file, in the generated parameter table, and

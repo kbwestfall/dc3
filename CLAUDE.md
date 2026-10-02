@@ -10,7 +10,7 @@ The design record lives in `claude/` and is authoritative:
 | Document | What it is |
 |---|---|
 | `dc3-original-implementation.md` | Survey of the original C++ code base. The authority on what the existing code does. |
-| `dc3-python-port-plan.md` | The phased plan. The document implementation is measured against, and the one to amend when reality disagrees with it. |
+| `dc3-python-port-plan.md` | The phased plan. The document implementation is measured against. It stays fixed: when reality disagrees with it, record the deviation in `dc3-python-implementation.md`, not here. |
 | `dc3-python-implementation.md` | The running record: what was built in each phase, and **every deviation from the plan**. |
 | `plan-reassessment.md`, `notes` | Support material. Consult when a plan decision looks arbitrary; not maintained as reference. |
 
@@ -58,6 +58,10 @@ These are easy to violate accidentally and expensive to unpick.
 
 ## Conventions
 
+- **Never use NaN intentionally.** A value that is invalid, missing or to be
+  ignored is flagged with a mask, never by setting it to NaN. A NaN always
+  signifies a computational error. Do not write NaN as a placeholder, a fill
+  value, an "undefined" result, or a gap in a plotted line.
 - **Always use explicit condition checks.** Never rely on the truthiness or
   falsiness of a non-boolean object: write `if x is None`, `if len(x) == 0`,
   `if x != 0`, not `if not x` or `if x`. Truthiness on an actual `bool` is fine.

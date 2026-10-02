@@ -33,41 +33,6 @@ def test_velscale_matches_a_direct_calculation():
         'The velocity scale does not match the velocity between adjacent pixels'
 
 
-def test_grid_round_trip():
-    """A constructed grid is recovered by grid_from_wave."""
-    log10lam0, dloglam, npix = np.log10(3800.0), 1e-4, 100
-    wave = sampling.log_wavelength_grid(log10lam0, dloglam, npix)
-    recovered = sampling.grid_from_wave(wave)
-    assert np.isclose(recovered[0], log10lam0), 'The starting wavelength was not recovered'
-    assert np.isclose(recovered[1], dloglam), 'The pixel size was not recovered'
-
-
-def test_linear_grid_is_rejected():
-    """
-    A linearly sampled grid is refused rather than silently accepted.
-
-    Every velocity in dc3 assumes logarithmic sampling, so accepting a linear
-    grid here would produce results that are wrong in a way nothing downstream
-    could detect.  Resample is the supported way to convert one.
-    """
-    with pytest.raises(DC3Error, match='not uniformly sampled'):
-        sampling.grid_from_wave(np.linspace(3800.0, 5000.0, 100))
-
-
-@pytest.mark.parametrize(
-    'wave,match',
-    [
-        (np.array([5000.0]), 'at least two'),
-        (np.array([-1.0, 1.0, 3.0]), 'positive'),
-        (np.array([5000.0, 4000.0, 3000.0]), 'ascending'),
-    ]
-)
-def test_invalid_grids_are_rejected(wave, match):
-    """A malformed wavelength vector is reported, not worked around."""
-    with pytest.raises(DC3Error, match=match):
-        sampling.grid_from_wave(wave)
-
-
 # ----------------------------------------------------------------------
 # The velocity offset between grids
 # ----------------------------------------------------------------------
@@ -142,7 +107,7 @@ def test_grid_velocity_offset_recovers_a_doppler_shift_from_a_pixel_lag(velscale
 
 
 # ----------------------------------------------------------------------
-# Grid helpers
+# Converting between pixel centres and borders
 # ----------------------------------------------------------------------
 def test_centers_and_borders_invert():
     """Converting centres to borders and back recovers the centres."""
@@ -161,195 +126,434 @@ def test_centers_and_borders_invert_geometrically():
         'Geometric centres were not recovered from their borders'
 
 
-def test_grid_borders_and_centers_are_consistent():
-    """The centres derived from the borders match those computed directly."""
-    rng = [3800.0, 5000.0]
-    npix = 50
-    borders = sampling.grid_borders(rng, npix, log=True)[0]
-    centers = sampling.grid_centers(rng, npix, log=True)[0]
-    assert borders.size == npix + 1, 'grid_borders did not return npix+1 borders'
-    assert np.allclose(sampling.borders_to_centers(borders, log=True), centers), \
-        'grid_borders and grid_centers disagree about where the pixels are'
+# ----------------------------------------------------------------------
+# Grids used by the tests of sampling_type and SpectralGrid
+# ----------------------------------------------------------------------
+def miles_like_wave():
+    """A linear grid at MILES-like sampling: 0.9 A pixels from 3500 A."""
+    return 3500.0 + 0.9 * np.arange(4300)
 
 
-def test_grid_npix_covers_the_range():
-    """The pixel count and adjusted range are mutually consistent."""
-    npix, rng = sampling.grid_npix(rng=[3800.0, 5000.0], dx=1e-4, log=True)
-    assert npix > 0, 'No pixels were allocated for a valid range'
-    dloglam = (np.log10(rng[1]) - np.log10(rng[0])) / (npix - 1)
-    assert np.isclose(dloglam, 1e-4), \
-        'The adjusted range does not divide into the requested pixel size'
+def dms_like_wave():
+    """A logarithmic grid at 7.5 km/s per pixel, as in the published DiskMass data."""
+    return sampling.log_wavelength_grid(np.log10(4000.0), 1.09e-5, 4000)
 
 
-def test_grid_npix_requires_a_two_element_range():
-    """A malformed range is reported."""
-    with pytest.raises(DC3Error, match='2-element'):
-        sampling.grid_npix(rng=[1.0, 2.0, 3.0], dx=0.1)
+def spliced_borders():
+    """
+    The borders of two contiguous linear sections: 50 pixels of 0.9 A, then 50 of 0.4 A.
+
+    Border 50 is the splice.  Returned with the centres, which are the linear
+    centres of the pixels.
+    """
+    first = 3500.0 - 0.45 + 0.9 * np.arange(51)
+    second = first[-1] + 0.4 * np.arange(1, 51)
+    borders = np.concatenate([first, second])
+    return (borders[:-1] + borders[1:]) / 2, borders
 
 
 # ----------------------------------------------------------------------
-# Resample
+# Detecting the sampling
 # ----------------------------------------------------------------------
-def test_resample_conserves_the_integral():
+@pytest.mark.parametrize(
+    'wave,kind',
+    [
+        (miles_like_wave(), 'linear'),
+        (dms_like_wave(), 'log'),
+        (spliced_borders()[0], 'irregular'),
+    ],
+    ids=['linear', 'log', 'spliced']
+)
+def test_sampling_type_identifies_each_kind(wave, kind):
+    """Linear, logarithmic and spliced vectors are each recognized."""
+    assert sampling.sampling_type(wave) == kind, f'A {kind} vector was not recognized as such'
+
+
+@pytest.mark.parametrize('make_wave', [miles_like_wave, dms_like_wave], ids=['linear', 'log'])
+def test_sampling_type_survives_float32_storage(make_wave):
     """
-    Resampling conserves the integral of the input.
+    A regular grid stored in single precision is still recognized as regular.
 
-    This is the property that makes it usable on flux: the total is preserved
-    even though the pixel boundaries move.
+    Checked on the float32 values converted back to double precision, which is
+    how such a grid arrives: the dtype no longer shows the rounding.
     """
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.exp(-0.5 * ((x - 50.0) / 10.0) ** 2)
-
-    r = sampling.Resample(y, x=x, newRange=[1.0, 100.0], newpix=50, newLog=False)
-    integral_in = np.sum(y * np.diff(sampling.centers_to_borders(x)))
-    integral_out = np.sum(r.outy * np.diff(r.outborders))
-    assert np.isclose(integral_in, integral_out, rtol=1e-6), \
-        'Resampling did not conserve the integral of the input'
+    wave = make_wave()
+    rounded = wave.astype(np.float32).astype(float)
+    assert sampling.sampling_type(rounded) == sampling.sampling_type(wave), \
+        'Storing a regular grid in single precision changed its detected sampling'
 
 
-def test_resample_preserves_a_constant():
-    """A constant function resamples to the same constant."""
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.full(100, 3.0)
-    r = sampling.Resample(y, x=x, newRange=[10.0, 90.0], newpix=37, newLog=False)
-    assert np.allclose(r.outy, 3.0), \
-        'A constant did not survive resampling; the normalization is wrong'
-
-
-def test_resample_linear_to_log():
+def test_float32_floor_is_what_admits_a_finely_sampled_grid():
     """
-    A linearly sampled spectrum resamples onto a logarithmic grid.
+    At fine sampling, float32 rounding alone exceeds the default tolerance.
 
-    This is the pre-processing step a user needs before dc3 will accept a
-    spectrum, since grid_from_wave refuses linear sampling.
+    The DiskMass-like grid rounded to float32 departs from a uniform grid by
+    more than 1e-3 pixels, so without the floor it would be called irregular.
+    This makes the preceding test discriminating rather than vacuous.
     """
-    wave = np.linspace(3800.0, 5000.0, 500)
-    flux = 1.0 + 0.5 * np.sin((wave - 3800.0) / 100.0)
-
-    r = sampling.Resample(flux, x=wave, newRange=[3810.0, 4990.0], newpix=400, newLog=True)
-    # The output grid must now satisfy the check that rejected the input
-    log10lam0, dloglam = sampling.grid_from_wave(r.outx)
-    assert dloglam > 0, 'The resampled grid is not logarithmically sampled'
-    assert np.all(np.isfinite(r.outy)), 'The resampled flux contains non-finite values'
-    assert np.allclose(np.mean(r.outy), np.mean(flux), rtol=0.05), \
-        'The resampled mean flux differs substantially from the input'
+    rounded = dms_like_wave().astype(np.float32).astype(float)
+    departure = sampling._uniform_fit(np.log10(rounded))[2]
+    assert departure > 1e-3, 'This test needs a grid whose rounding exceeds the default tolerance'
+    assert sampling.sampling_type(rounded) == 'log', \
+        'The float32 floor did not admit a regular grid stored in single precision'
 
 
-def test_resample_two_dimensional():
-    """A set of spectra resamples along the last axis."""
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.vstack([np.full(100, 1.0), np.full(100, 2.0), np.full(100, 3.0)])
-    r = sampling.Resample(y, x=x, newRange=[10.0, 90.0], newpix=40, newLog=False)
-    assert r.outy.shape == (3, 40), 'The resampled set does not have the expected shape'
-    assert np.allclose(r.outy[:, 5], [1.0, 2.0, 3.0]), \
-        'The spectra were mixed together rather than resampled independently'
-
-
-def test_resample_propagates_errors():
-    """Errors are resampled in quadrature."""
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.full(100, 1.0)
-    e = np.full(100, 0.1)
-    r = sampling.Resample(y, e=e, x=x, newRange=[10.0, 90.0], newpix=40, newLog=False)
-    assert r.oute is not None, 'No errors were returned despite errors being supplied'
-    assert np.all(r.oute > 0), 'The resampled errors are not positive'
-
-
-def test_resample_reports_the_valid_fraction():
+def test_sampling_type_honours_a_user_tolerance():
     """
-    The fraction of each output pixel covered by valid input is reported.
+    A departure beyond the default tolerance is accepted if the user allows it.
 
-    Pixels beyond the input range have no valid data, which is what lets a
-    caller distinguish "zero flux" from "no information".
+    One pixel centre is displaced by a hundredth of a pixel: irregular at the
+    default of 1e-3 pixels, linear at 0.05.
     """
-    x = np.linspace(10.0, 90.0, 80)
-    y = np.full(80, 1.0)
-    r = sampling.Resample(y, x=x, newRange=[1.0, 100.0], newpix=99, newLog=False)
-    assert np.any(r.outf == 0), 'No output pixel was reported as uncovered by valid input'
-    assert np.any(np.isclose(r.outf, 1.0)), 'No output pixel was reported as fully covered'
+    wave = miles_like_wave()
+    wave[2000] += 0.01 * 0.9
+    assert sampling.sampling_type(wave) == 'irregular', \
+        'A displacement of 0.01 pixels should exceed the default tolerance'
+    assert sampling.sampling_type(wave, tol=0.05) == 'linear', \
+        'A displacement of 0.01 pixels should be within a tolerance of 0.05'
 
 
-def test_resample_masks_are_honoured():
-    """A masked input pixel does not contribute valid data."""
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.full(100, 1.0)
-    mask = np.zeros(100, dtype=bool)
-    mask[40:60] = True
-    r = sampling.Resample(y, mask=mask, x=x, newRange=[1.0, 100.0], newpix=100, newLog=False)
-    assert np.any(r.outf < 1.0), 'The masked region was not reflected in the valid fraction'
-
-
-def test_resample_does_not_modify_the_callers_mask():
+def test_sampling_type_calls_an_ambiguous_vector_logarithmic():
     """
-    The input mask is copied, not adopted.
+    A vector both descriptions fit is called logarithmic.
 
-    Resample merges the masks of the data and the errors into its own, which
-    would otherwise modify an array the caller still holds.
+    Ten pixels spanning a tiny fraction of their wavelength are linear and
+    logarithmic to far better than the tolerance, so the choice cannot matter.
     """
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.ma.MaskedArray(np.full(100, 1.0), mask=np.zeros(100, dtype=bool))
-    y.mask[10:20] = True
-    mask = np.zeros(100, dtype=bool)
-    sampling.Resample(y, mask=mask, x=x, newRange=[1.0, 100.0], newpix=50, newLog=False)
-    assert not np.any(mask), "Resample modified the caller's mask array in place"
+    wave = sampling.log_wavelength_grid(np.log10(5000.0), 1e-6, 10)
+    assert sampling._uniform_fit(wave)[2] < 1e-3, \
+        'This test needs a vector that is also linear to within the tolerance'
+    assert sampling.sampling_type(wave) == 'log', \
+        'A vector both descriptions fit should be called logarithmic'
 
 
-def test_resample_covariance():
+@pytest.mark.parametrize(
+    'wave,match',
+    [
+        (np.array([5000.0]), 'at least two'),
+        (np.array([-1.0, 1.0, 3.0]), 'positive'),
+        (np.array([5000.0, 5001.0, 5001.0]), 'strictly ascending'),
+        (np.ones((2, 3)), 'one-dimensional'),
+    ]
+)
+def test_sampling_type_rejects_an_invalid_vector(wave, match):
+    """A vector that cannot describe a grid is reported."""
+    with pytest.raises(DC3Error, match=match):
+        sampling.sampling_type(wave)
+
+
+# ----------------------------------------------------------------------
+# SpectralGrid
+# ----------------------------------------------------------------------
+def test_log_grid_geometry():
     """
-    Resampling correlates neighbouring output pixels, and can report it.
+    A logarithmic grid's centres are the geometric centres of its pixels.
 
-    The covariance is not used on any dc3 path yet -- spectral covariance is
-    deliberately ignored -- but this is the hook if that decision changes, and
-    it exercises the astropy Covariance API that replaced mangadap's.
+    Every pixel then has the same velocity width, the grid's velocity scale.
     """
-    x = np.linspace(1.0, 100.0, 100)
-    y = np.full(100, 1.0)
-    e = np.full(100, 0.1)
-    r = sampling.Resample(
-        y, e=e, x=x, newRange=[10.0, 90.0], newpix=40, newLog=False, covar=True
-    )
-    assert r.covar is not None, 'No covariance was returned despite being requested'
-    dense = r.covar.to_dense()
-    assert dense.shape == (40, 40), 'The covariance does not have one entry per output pixel pair'
-    off_diagonal = dense - np.diag(np.diag(dense))
-    assert np.any(np.absolute(off_diagonal) > 0), \
-        'The covariance is diagonal; resampling must correlate neighbouring output pixels'
+    grid = sampling.SpectralGrid.from_log_spacing(np.log10(4000.0), 1.09e-5, 100)
+    assert grid.kind == 'log' and grid.is_log, 'A logarithmic grid did not report its kind'
+    assert grid.npix == 100 and grid.borders.size == 101, 'The grid has the wrong number of pixels'
+    assert np.allclose(sampling.borders_to_centers(grid.borders, log=True), grid.wave), \
+        "A logarithmic grid's centres are not the geometric centres of its pixels"
+    assert np.allclose(grid.loglam, np.log10(grid.wave)), 'loglam is not log10 of the centres'
+    assert np.allclose(grid.pixel_velocity, grid.velscale), \
+        'Every pixel of a logarithmic grid should have the velocity scale as its width'
+    assert np.isclose(grid.velscale, sampling.velscale(1.09e-5)), \
+        'The velocity scale does not follow from the pixel size'
 
 
-def test_resample_covariance_requires_step_resampling():
-    """The covariance is only defined for step resampling, and says so."""
-    x = np.linspace(1.0, 100.0, 100)
-    with pytest.raises(DC3Error, match='step resampling'):
-        sampling.Resample(
-            np.full(100, 1.0), x=x, newRange=[10.0, 90.0], newpix=40, step=False, covar=True
-        )
+def test_linear_grid_geometry():
+    """
+    A linear grid's centres are the linear centres of its pixels.
+
+    Its pixels narrow in velocity with wavelength, as a constant width in
+    angstroms is a falling fraction of the wavelength.
+    """
+    grid = sampling.SpectralGrid.from_linear_spacing(3500.0, 0.9, 100)
+    assert grid.kind == 'linear' and not grid.is_log, 'A linear grid did not report its kind'
+    assert np.allclose(np.diff(grid.borders), 0.9), 'A linear grid does not have equal pixels'
+    assert np.allclose(sampling.borders_to_centers(grid.borders, log=False), grid.wave), \
+        "A linear grid's centres are not the linear centres of its pixels"
+    assert np.all(np.diff(grid.pixel_velocity) < 0), \
+        "A linear grid's pixels should narrow in velocity with wavelength"
+    assert np.allclose(
+        grid.pixel_velocity, velocity.SPEED_OF_LIGHT * np.log(grid.borders[1:] / grid.borders[:-1])
+    ), 'The velocity width of each pixel does not follow from its borders'
+
+
+@pytest.mark.parametrize('name', ['log10lam0', 'dloglam', 'velscale'])
+def test_log_only_quantities_are_refused_for_other_grids(name):
+    """
+    A quantity that exists only for a logarithmic grid is refused, not guessed.
+
+    A linear grid has no single velocity scale; returning one would be wrong
+    everywhere but at one wavelength.
+    """
+    grid = sampling.SpectralGrid.from_linear_spacing(3500.0, 0.9, 100)
+    with pytest.raises(DC3Error, match='only for a logarithmically sampled grid'):
+        getattr(grid, name)
+    with pytest.raises(DC3Error, match='only for a logarithmically sampled grid'):
+        grid.shifted(1)
+
+
+def test_irregular_grid_keeps_supplied_borders():
+    """An irregular grid given its borders uses them as given."""
+    wave, borders = spliced_borders()
+    grid = sampling.SpectralGrid('irregular', wave.size, wave=wave, borders=borders)
+    assert np.array_equal(grid.borders, borders), 'Supplied borders were not used as given'
+    assert np.array_equal(grid.wave, wave), 'Supplied centres were not used as given'
+    assert np.allclose(
+        grid.pixel_velocity, velocity.SPEED_OF_LIGHT * np.log(borders[1:] / borders[:-1])
+    ), 'The velocity width of each pixel does not follow from its borders'
+
+
+def test_irregular_grid_derives_borders_from_linear_centres():
+    """
+    Borders derived for an irregular grid are exact except beside a splice.
+
+    The centres are taken to be linear centres.  Within each section of a
+    spliced grid that is exact; at the splice, the border just below the last
+    pixel before it is misplaced by a quarter of the change in pixel size.
+    This pins the behaviour the class documents.
+    """
+    wave, true_borders = spliced_borders()
+    derived = sampling.SpectralGrid('irregular', wave.size, wave=wave).borders
+    error = derived - true_borders
+    misplaced = np.flatnonzero(np.absolute(error) > 1e-9)
+    assert misplaced.tolist() == [49], \
+        'Only the border just below the last pixel before the splice should be misplaced'
+    assert np.isclose(error[49], (0.9 - 0.4) / 4), \
+        'The misplaced border should be off by a quarter of the change in pixel size'
 
 
 @pytest.mark.parametrize(
     'kwargs,match',
     [
-        ({'x': np.arange(10.0), 'xRange': [0.0, 9.0]}, 'One and only one'),
-        ({}, 'One and only one'),
+        ({'kind': 'spline', 'npix': 10, 'start': 1.0, 'step': 1.0}, 'Unknown grid kind'),
+        ({'kind': 'log', 'npix': 1, 'start': 3.6, 'step': 1e-4}, 'at least two pixels'),
+        ({'kind': 'log', 'npix': 10, 'start': 3.6}, 'both its start and its step'),
+        ({'kind': 'log', 'npix': 10, 'start': 3.6, 'step': 0.0}, 'must be positive'),
+        ({'kind': 'linear', 'npix': 10, 'start': 0.2, 'step': 1.0}, 'positive wavelengths'),
+        ({'kind': 'irregular', 'npix': 10}, 'needs its pixel centres'),
+        ({'kind': 'irregular', 'npix': 10, 'wave': np.arange(1.0, 6.0)}, 'Expected 10 pixel'),
     ]
 )
-def test_resample_rejects_ambiguous_input_grids(kwargs, match):
-    """The input grid must be specified exactly once."""
+def test_invalid_grids_are_refused(kwargs, match):
+    """Parameters that do not describe a valid grid are reported."""
     with pytest.raises(DC3Error, match=match):
-        sampling.Resample(np.ones(10), newRange=[0.0, 9.0], newpix=5, **kwargs)
+        sampling.SpectralGrid(**kwargs)
 
 
-def test_resample_rejects_mismatched_shapes():
-    """Errors and masks must match the data."""
-    x = np.arange(10.0)
-    with pytest.raises(DC3Error, match='Error array shape'):
-        sampling.Resample(np.ones(10), e=np.ones(5), x=x, newRange=[0.0, 9.0], newpix=5)
-    with pytest.raises(DC3Error, match='Mask array shape'):
-        sampling.Resample(
-            np.ones(10), mask=np.zeros(5, dtype=bool), x=x, newRange=[0.0, 9.0], newpix=5
-        )
+@pytest.mark.parametrize(
+    'borders,match',
+    [
+        (np.arange(0.5, 5.0), 'Expected 6 pixel borders'),
+        (np.array([0.5, 1.5, 2.5, 3.5, 4.5, 4.9]), 'strictly within its borders'),
+    ]
+)
+def test_inconsistent_irregular_borders_are_refused(borders, match):
+    """Borders must number one more than the pixels and bracket every centre."""
+    with pytest.raises(DC3Error, match=match):
+        sampling.SpectralGrid('irregular', 5, wave=np.arange(1.0, 6.0), borders=borders)
 
 
-def test_resample_rejects_three_dimensional_input():
-    """Only 1-D and 2-D data can be resampled."""
-    with pytest.raises(DC3Error, match='1D or 2D'):
-        sampling.Resample(np.ones((2, 3, 4)), x=np.arange(4.0), newRange=[0.0, 3.0], newpix=2)
+def test_grid_arrays_are_read_only():
+    """
+    A grid's arrays cannot be changed, in place or by assignment.
+
+    A grid is shared by every spectrum set built on it, so a change through one
+    would silently change them all.
+    """
+    grid = sampling.SpectralGrid.from_log_spacing(3.6, 1e-4, 10)
+    for name in ['wave', 'borders', 'loglam', 'pixel_velocity']:
+        with pytest.raises(ValueError, match='read-only'):
+            getattr(grid, name)[0] = 1.0
+        with pytest.raises(AttributeError):
+            setattr(grid, name, np.zeros(10))
+
+
+def test_grid_does_not_freeze_the_callers_arrays():
+    """The arrays given to an irregular grid are copied, so the caller's stay writeable."""
+    wave, borders = spliced_borders()
+    sampling.SpectralGrid('irregular', wave.size, wave=wave, borders=borders)
+    assert wave.flags.writeable, "Building a grid made the caller's centres read-only"
+    assert borders.flags.writeable, "Building a grid made the caller's borders read-only"
+
+
+def test_shifted_relabels_by_whole_pixels():
+    """Shifting moves every pixel by the same number of pixels, and keeps the sampling."""
+    grid = sampling.SpectralGrid.from_log_spacing(np.log10(4000.0), 1e-4, 20)
+    for n in [3, -2, 0]:
+        shifted = grid.shifted(n)
+        assert isinstance(shifted, sampling.SpectralGrid), 'Shifting did not return a grid'
+        assert np.allclose(shifted.loglam, grid.loglam + n * grid.dloglam), \
+            f'Shifting by {n} did not move every pixel by {n} pixels'
+        assert shifted.dloglam == grid.dloglam and shifted.npix == grid.npix, \
+            'Shifting changed the sampling of the grid'
+
+
+# ----------------------------------------------------------------------
+# SpectralGrid.from_vector
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    'make_wave,kind',
+    [(miles_like_wave, 'linear'), (dms_like_wave, 'log')],
+    ids=['linear', 'log']
+)
+def test_from_vector_replaces_a_regular_vector_by_its_fitted_grid(make_wave, kind):
+    """
+    A regular vector becomes the uniform grid it describes.
+
+    Built from the float32-rounded values, the fitted grid recovers the true
+    one more closely than the stored values themselves do, which is the point
+    of fitting rather than adopting them.
+    """
+    wave = make_wave()
+    rounded = wave.astype(np.float32).astype(float)
+    grid = sampling.SpectralGrid.from_vector(rounded)
+    assert grid.kind == kind, f'A {kind} vector did not give a {kind} grid'
+    step = np.diff(wave)
+    assert np.amax(np.absolute(grid.wave - wave) / step.mean()) \
+        < np.amax(np.absolute(rounded - wave) / step.mean()), \
+        'The fitted grid should be closer to the true grid than the rounded values are'
+
+
+def test_from_vector_adopts_an_irregular_vector_as_given():
+    """An irregular vector is kept exactly, with its borders if they are supplied."""
+    wave, borders = spliced_borders()
+    grid = sampling.SpectralGrid.from_vector(wave, borders=borders)
+    assert grid.kind == 'irregular', 'A spliced vector did not give an irregular grid'
+    assert np.array_equal(grid.wave, wave), 'The centres of an irregular vector were altered'
+    assert np.array_equal(grid.borders, borders), 'The supplied borders were not used'
+
+
+def test_from_vector_accepts_consistent_borders_for_a_regular_vector():
+    """Borders agreeing with the fitted grid are accepted."""
+    wave = 3500.0 + 0.9 * np.arange(20)
+    grid = sampling.SpectralGrid.from_vector(wave, borders=3500.0 - 0.45 + 0.9 * np.arange(21))
+    assert grid.kind == 'linear', 'Consistent borders changed the detected sampling'
+
+
+def test_from_vector_refuses_inconsistent_borders_for_a_regular_vector():
+    """
+    Borders a regular grid cannot reproduce are reported, not discarded.
+
+    Here they are displaced by a sixth of a pixel from where a linear grid of
+    these centres puts them.
+    """
+    wave = 3500.0 + 0.9 * np.arange(20)
+    with pytest.raises(DC3Error, match='depart from that grid'):
+        sampling.SpectralGrid.from_vector(wave, borders=3500.0 - 0.30 + 0.9 * np.arange(21))
+
+
+def test_repr_reports_the_kind():
+    """The summary identifies the sampling."""
+    assert 'km/s/pix' in repr(sampling.SpectralGrid.from_log_spacing(3.6, 1e-4, 10)), \
+        'A logarithmic grid should report its velocity scale'
+    assert 'dlam' in repr(sampling.SpectralGrid.from_linear_spacing(3500.0, 0.9, 10)), \
+        'A linear grid should report its pixel size'
+    assert 'irregular' in repr(sampling.SpectralGrid.from_vector(spliced_borders()[0])), \
+        'An irregular grid should say so'
+
+
+# ----------------------------------------------------------------------
+# Finding splices
+# ----------------------------------------------------------------------
+def high_resolution_spliced_wave(nper=3000):
+    """
+    Centres of two linear sections near 5000 A at lambda/dlambda of 1e5 and 1.7e5.
+
+    Pixel nper is the first of the second section.  Fine enough that wavelengths
+    stored in single precision carry noise of order 1e-2 in the ratio of
+    neighbouring pixel sizes.
+    """
+    first = 5000.0 + 0.05 * np.arange(nper)
+    second = first[-1] + 0.04 + 0.03 * np.arange(nper)
+    return np.concatenate([first, second])
+
+
+@pytest.mark.parametrize(
+    'grid',
+    [
+        sampling.SpectralGrid.from_vector(miles_like_wave()),
+        sampling.SpectralGrid.from_vector(dms_like_wave()),
+    ],
+    ids=['linear', 'log']
+)
+def test_regular_grids_have_no_breaks(grid):
+    """A regularly sampled grid has no splices, by definition."""
+    breaks = grid.breaks()
+    assert breaks.size == 0, 'A regular grid reported a jump in its sampling'
+    assert breaks.dtype.kind == 'i', 'The breaks should be integer pixel indices'
+
+
+def test_a_smoothly_irregular_grid_has_no_breaks():
+    """
+    A grid whose pixel size changes smoothly is not spliced.
+
+    A logarithmic grid described pixel by pixel changes its width in
+    wavelength by about 1e-4 per pixel, well inside the tolerance.
+    """
+    wave = dms_like_wave()
+    grid = sampling.SpectralGrid('irregular', wave.size, wave=wave)
+    assert grid.breaks().size == 0, 'A smoothly varying sampling was reported as spliced'
+
+
+def test_breaks_find_a_splice_with_supplied_borders():
+    """With the true borders, a splice is exactly one break, at the splice."""
+    wave, borders = spliced_borders()
+    grid = sampling.SpectralGrid.from_vector(wave, borders=borders)
+    assert np.array_equal(grid.breaks(), [50]), \
+        'A splice with known borders should give one break, at the first pixel after it'
+
+
+def test_breaks_spread_over_a_run_when_borders_are_derived():
+    """
+    Borders derived from the centres spread a splice over adjacent boundaries.
+
+    The border derived just below the last pixel before a splice is misplaced
+    (see the SpectralGrid documentation), which changes the widths of the two
+    pixels below the splice.  The jump therefore appears across a run of three
+    boundaries, ending at the splice itself, and nowhere else.
+    """
+    grid = sampling.SpectralGrid.from_vector(spliced_borders()[0])
+    breaks = grid.breaks()
+    assert 50 in breaks, 'The splice itself was not flagged'
+    assert np.all(np.diff(breaks) == 1), 'The flagged boundaries should form a single run'
+    assert np.all((breaks >= 48) & (breaks <= 50)), \
+        'Boundaries outside the two pixels below the splice were flagged'
+
+
+def test_breaks_honour_the_tolerance():
+    """A jump smaller than the tolerance is treated as smooth."""
+    wave, borders = spliced_borders()
+    grid = sampling.SpectralGrid.from_vector(wave, borders=borders)
+    # The splice changes the pixel size from 0.9 to 0.4 A, a ratio of 0.44
+    assert grid.breaks(tol=0.5).size == 1, 'A change of 56 per cent exceeds a tolerance of 0.5'
+    assert grid.breaks(tol=0.6).size == 0, \
+        'A change of 56 per cent should be treated as smooth at a tolerance of 0.6'
+
+
+def test_breaks_survive_float32_storage():
+    """
+    A finely sampled spliced grid stored in single precision has only its splice.
+
+    At these samplings the rounding alone puts noise into the ratio of
+    neighbouring pixel sizes that exceeds the default tolerance, which the
+    float32 floor absorbs; the splice, a change of 40 per cent, still stands.
+    """
+    exact = high_resolution_spliced_wave()
+    rounded = exact.astype(np.float32).astype(float)
+    grid = sampling.SpectralGrid.from_vector(rounded)
+    breaks = grid.breaks()
+    assert breaks.size > 0, 'The splice was lost'
+    assert np.all((breaks >= 2998) & (breaks <= 3000)), \
+        'Single-precision rounding was reported as a splice'
+
+    # The floor is what admits it: without it, the rounding exceeds the tolerance
+    width = np.diff(grid.borders)
+    noise = np.absolute(width[1:] / width[:-1] - 1)
+    noise = np.delete(noise, np.arange(2997, 3002))
+    assert np.amax(noise) > 0.01, \
+        'This test needs rounding noise that exceeds the default tolerance by itself'

@@ -20,6 +20,9 @@ Documentation Updates
   ``dc3`` adapts (PypeIt, ``mangadap``) and the redistribution prohibition on
   ``ppxf``, which is a hard dependency but must never be vendored.
 
+- Added the Sphinx documentation: a landing page, the release history, a
+  development section, and the API reference, rendered with ``numpydoc``.
+
 Dependency Changes
 ------------------
 
@@ -69,8 +72,12 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.core.velocity``, providing the conversions between velocity and
   redshift.
 
-- Added ``dc3.core.sampling``, providing the logarithmic wavelength grid and the
-  ``Resample`` class for flux-conserving resampling.
+- Added ``dc3.core.sampling``, describing wavelength grids -- logarithmic,
+  linear or irregular, with ``SpectralGrid`` -- and detecting which a
+  wavelength vector has, with ``sampling_type``.
+
+- Added ``dc3.core.resample``, providing the ``Resample`` class for
+  flux-conserving resampling.
 
 - Added ``dc3.spectra.Spectra``, the internal representation of a set of spectra
   sharing one logarithmic wavelength grid.  Instrumental resolution is carried
@@ -133,3 +140,77 @@ Functionality/Performance Improvements and Additions
 - Added ``dc3.core.sampling.grid_velocity_offset`` and
   ``PreparedTemplates.velocity_offset``, giving the constant velocity offset
   between template and galaxy grids of matched sampling.
+
+- Added ``dc3.core.lsf``, for building spectra of lines of known width and
+  measuring their pre- or post-pixelized widths.
+
+- Added the template-preparation characterization: four scripts in
+  ``doc/scripts/``, whose figures and tables are committed under
+  ``doc/figures/characterization/`` and regenerated with ``make figures``.
+
+- Template resampling now declares the input grid logarithmic when building
+  its pixel borders.
+
+- ``Spectra`` now holds a ``dc3.core.sampling.SpectralGrid``, which may be
+  logarithmic, linear or irregular, and is constructed as
+  ``Spectra(flux, grid)``. Template libraries are kept on their native grid and
+  resampled once, during preparation. Removed
+  ``dc3.core.sampling.grid_from_wave`` and ``TemplateLibraryPar.log10``.
+
+- Added ``dc3.spectra.GalaxySpectra``, which requires a logarithmic grid.
+
+- ``match_resolution``, ``ResolutionMatch`` and ``check_pixelization`` accept a
+  velocity width per pixel.
+
+- ``apply_kernel`` takes no coordinate argument, passes ``varsmooth`` pixel
+  coordinates, and works around an upstream defect in ``varsmooth`` for an
+  exactly uniform kernel.
+
+- Template preparation detects jumps in the library's sampling and resolution
+  and masks a band around each, flagged ``SAMP_JUMP`` or ``RES_JUMP``. Added
+  ``SpectralGrid.breaks``, ``dc3.core.resolution.idsp_breaks``,
+  ``TemplateLibraryPar.sampling_tol``, ``sampling_jump_tol`` and
+  ``idsp_jump_tol``, and ``TemplatePar.convolution_mask_growth``.
+
+- Template preparation masks the prepared templates around each run of pixels
+  masked in the library, grown by ``convolution_mask_growth`` kernel
+  dispersions, and flags them with the new ``TPL_MASKED`` bit.
+
+- Added a fifth characterization, of jumps and masked gaps in the library, run
+  with ``make splices``.
+
+- Added the developer page ``doc/dev/template_preparation.rst``, summarizing
+  the template-preparation characterization.
+
+- ``TemplatePar.varsmooth_oversample`` must now be at least 2, and defaults to
+  2. ``dc3.core.resolution.apply_kernel`` also defaults to 2 and refuses a
+  smaller value.
+
+- Template preparation corrects, by default, for the variance that resolution
+  matching and resampling add to the line-spread function beyond what they are
+  asked to, so the prepared templates reach the target resolution; where they
+  cannot, the dispersion reported is the one achieved.  Added
+  ``TemplatePar.correct_lsf_excess`` and ``resample_excess_method``,
+  ``dc3.core.resolution.varsmooth_excess``, the ``varsmooth_oversample``
+  argument of ``match_resolution``, and ``ResolutionMatch.achieved``.
+
+- Added a characterization of the corrected pipeline, run with
+  ``make correction``.
+
+- The whole-pipeline characterization (``make preparation``) now prepares
+  MILES-like templates for MaNGA-like data and compares the prepared resolution
+  with the predicted excesses of resolution matching and resampling.
+
+- Added a characterization of the pixel-size ratio Step 2 meets in production,
+  for a linearly sampled library at ``velscale_ratio = 'auto'``, run with
+  ``make velscale``.
+
+- Added exploratory scripts in ``doc/scripts/`` comparing convolution methods,
+  the effect of the kernel's dynamic range, and a kinematic-style kernel fit,
+  and examining the choice of logarithmic sampling for a linearly sampled
+  template library.
+
+- The resolution-matching characterization (``make matching``) now compares
+  ``varsmooth`` with its scalar path and ``gaussian_filter1d``, measures the
+  second moment and a kinematic-style fit alongside the Gaussian fit, overlays
+  the predicted excess, and adds a figure of the line-centre shift.

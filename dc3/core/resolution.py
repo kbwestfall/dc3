@@ -87,9 +87,10 @@ simplification of it, for reasons that are all specific to ``dc3``:
   ingest, so it disappears from the matching entirely.
 - **One coordinate system, not three.**  ``mangadap`` moves between variance in
   :math:`\unicode{x212B}^2`, in :math:`({\rm km/s})^2` and in pixels, with a
-  linear/logarithmic branch in each conversion.  ``dc3`` is always
-  logarithmically sampled, so km/s to pixels is a division by one scalar and
-  the wavelength-coordinate system is never needed.
+  linear/logarithmic branch in each conversion.  Here km/s to pixels is a
+  division by each pixel's width in velocity, taken from the pixel borders by
+  :attr:`~dc3.core.sampling.SpectralGrid.pixel_velocity` whatever the kind of
+  grid, so the wavelength-coordinate system is never needed.
 - **A returned result, not mutated state.**  ``GaussianKernelDifference``
   writes four attributes onto the object, which a later call reads and a
   further call mutates again; calling them out of order raises.  Here the
@@ -132,9 +133,11 @@ __all__ = [
     'apply_kernel',
     'check_pixelization',
     'dispersion_from_resolving_power',
+    'idsp_breaks',
     'match_resolution',
     'minimum_velscale_ratio',
     'resolving_power_from_dispersion',
+    'varsmooth_excess',
 ]
 
 
@@ -177,16 +180,19 @@ variable-:math:`\sigma` kernel becomes constant, and that stretch diverges as
 
     It is not confined to the clip: a genuinely uniform kernel on a grid whose
     ``numpy.gradient`` is exact triggers it at any width.  Requesting a uniform
-    0.5-pixel kernel on ``x = numpy.arange(n)`` yields 0.87 pixels; perturbing
-    one interior element of ``sig_x`` by one part in :math:`10^{12}` restores
-    the correct 0.500.  See ``test_resolution.py``, which pins both regimes.
+    0.5-pixel kernel on ``x = numpy.arange(n)`` yields 0.87 pixels.  Breaking
+    the uniformity restores the correct 0.500, but only if the perturbation
+    survives the rounding of the sum that sets the grid length: one part in
+    :math:`10^{12}` suffices for a few thousand pixels and is lost by twenty
+    thousand.  See ``test_resolution.py``, which pins both regimes.
 
-    ``dc3`` is insulated on both counts.  The sub-clip path is closed by
-    :func:`match_resolution` refusing an ``epsilon_sigma`` below the clip, so
-    ``sig`` is never clipped at all.  The uniform-kernel path stays open in
-    principle but does not fire on a realistic logarithmic grid, where
-    ``numpy.gradient`` carries floating-point noise -- which is luck rather than
-    design, hence the regression test.
+    ``dc3`` is insulated on both counts, by design.  The sub-clip path is
+    closed by :func:`match_resolution` refusing an ``epsilon_sigma`` below the
+    clip.  The uniform-kernel path is closed by :func:`apply_kernel`, which
+    always breaks the uniformity of the kernel it passes, by an amount scaled
+    to the stretched grid so that it survives that rounding without
+    overshooting; see ``_break_kernel_uniformity``.  The defect has been reported upstream,
+    and the workaround is to be removed once a fixed ``ppxf`` is released.
 """
 
 
@@ -252,6 +258,117 @@ def resolving_power_from_dispersion(dispersion):
     if np.any(_d <= 0):
         raise DC3ResolutionError('The instrumental dispersion must be positive.')
     return SPEED_OF_LIGHT / (SIGMA_TO_FWHM * _d)
+
+
+def idsp_breaks(idsp, tol=0.01):
+    r"""
+    Find the jumps in an instrumental dispersion vector.
+
+    A library spliced from sections observed at different resolutions has a
+    dispersion that jumps where two meet, and the variable-dispersion
+    convolution of Step 1 is not correct within a kernel's width of such a
+    jump (see :func:`~dc3.templates.prepare`).  A boundary between pixels
+    :math:`i` and :math:`i+1` is flagged if the dispersion changes across it by
+    more than the tolerance, as a fraction of the smaller of the two,
+
+    .. math::
+
+        \frac{|\sigma_{i+1} - \sigma_i|}{\min(\sigma_i, \sigma_{i+1})} > {\rm tol}.
+
+    A smooth resolution vector changes by about :math:`10^{-4}` per pixel, and
+    a measured, noisy one by more; the default of one per cent sits above that
+    and well below the jumps that matter.  A change spread over several pixels,
+    each below the tolerance, is treated as smooth however large its total.
+
+    Every flagged boundary is returned, so a jump spread over two or three
+    pixels -- by interpolation of the vector onto the library's grid, for
+    example -- appears as a run of adjacent breaks.
+
+    Parameters
+    ----------
+    idsp : :class:`numpy.ndarray`
+        The instrumental dispersion, in km/s, one value per pixel.
+    tol : float, optional
+        The largest fractional change between neighbours that is treated as
+        smooth.
+
+    Returns
+    -------
+    :class:`numpy.ndarray`
+        The index of the first pixel after each flagged boundary, in ascending
+        order; empty if there are none.
+
+    Raises
+    ------
+    DC3ResolutionError
+        Raised if the dispersion is not a one-dimensional vector of positive
+        values.
+    """
+    _idsp = np.asarray(idsp, dtype=float)
+    if _idsp.ndim != 1:
+        raise DC3ResolutionError('The instrumental dispersion must be a one-dimensional vector.')
+    if np.any(_idsp <= 0):
+        raise DC3ResolutionError('The instrumental dispersion must be positive.')
+    change = np.absolute(np.diff(_idsp)) / np.minimum(_idsp[1:], _idsp[:-1])
+    return np.where(change > tol)[0] + 1
+
+
+def varsmooth_excess(k, oversample, dynamic_range):
+    r"""
+    Return the variance :func:`ppxf.ppxf_util.varsmooth` adds beyond its kernel.
+
+    ``varsmooth`` stretches the coordinate so that a variable kernel becomes
+    constant, interpolating the spectrum linearly onto the stretched grid, and
+    back after convolving.  For a kernel that varies, the second moment of a
+    convolved line exceeds the quadrature sum of its own and the kernel's by
+
+    .. math::
+
+        E_1 = \frac{1}{6} - \frac{1}{\pi^2}\sum_{p \geq 1}
+              \frac{e^{-2\pi^2p^2k^2}}{p^2} + \frac{1}{6(mD)^2}
+
+    pixels squared, with :math:`k` the local kernel dispersion in pixels,
+    :math:`m` the oversampling and :math:`D = k_{\rm max}/k` the widest kernel
+    in the spectrum relative to the local one.
+
+    - The first term is the variance of linear interpolation, a triangle one
+      pixel wide on either side.
+    - The sum is the part of it the kernel does not resolve; it takes the
+      excess to zero as :math:`k \to 0`, where interpolating back at the
+      original nodes returns the original samples.
+    - The last term is the return interpolation, from a stretched grid whose
+      spacing is :math:`1/(mD)` pixels.
+
+    It is exact for the second moment of a resolved line, and does not hold
+    for an exactly uniform kernel, whose stretched grid lines up with the
+    pixels; :func:`apply_kernel` never passes one.  It is derived and
+    characterized in the developer documentation on template preparation
+    (Characterization 2).
+
+    Parameters
+    ----------
+    k : float, :class:`numpy.ndarray`
+        The local kernel dispersion, in pixels, as ``varsmooth`` applies it:
+        at least :data:`VARSMOOTH_MIN_SIG`.
+    oversample : int
+        The oversampling passed to ``varsmooth``, :math:`m`.
+    dynamic_range : float, :class:`numpy.ndarray`
+        The local dynamic range, :math:`D = k_{\rm max}/k`.
+
+    Returns
+    -------
+    :class:`numpy.ndarray`
+        The excess variance, in pixels squared, with the broadcast shape of
+        ``k`` and ``dynamic_range``.
+    """
+    _k = np.asarray(k, dtype=float)
+    # The sum converges fast: by p = 100 its terms are below 1e-4 of the first
+    p = np.arange(1, 101, dtype=float).reshape((-1,) + (1,) * _k.ndim)
+    aliased = np.sum(np.exp(-2 * np.square(np.pi * p * _k)) / np.square(p), axis=0)
+    return (
+        1 / 6 - aliased / np.pi ** 2
+        + 1 / (6 * np.square(oversample * np.asarray(dynamic_range, dtype=float)))
+    )
 
 
 def minimum_velscale_ratio(idsp, velscale):
@@ -337,9 +454,12 @@ def check_pixelization(idsp, velscale, label='spectra'):
     Parameters
     ----------
     idsp : :class:`numpy.ndarray`
-        The instrumental dispersion, in km/s.
-    velscale : float
-        The velocity scale of the spectra it describes, in km/s per pixel.
+        The instrumental dispersion, in km/s, of shape ``(npix,)`` or
+        ``(nspec, npix)``.
+    velscale : float, :class:`numpy.ndarray`
+        The width of each pixel of the spectra it describes, in km/s: a scalar
+        for a logarithmic grid, or one value per pixel for any other (see
+        :attr:`~dc3.core.sampling.SpectralGrid.pixel_velocity`).
     label : str, optional
         What the dispersion belongs to, for the warning message.
 
@@ -349,17 +469,25 @@ def check_pixelization(idsp, velscale, label='spectra'):
         True if the dispersion is at least :math:`\Delta/\sqrt{12}` everywhere,
         False if a warning was issued.
     """
-    floor = velscale / np.sqrt(12.0)
+    floor = np.asarray(velscale, dtype=float) / np.sqrt(12.0)
     below = np.asarray(idsp, dtype=float) < floor
     if not np.any(below):
         return True
+    if floor.ndim == 0:
+        bound = (
+            f'{floor:.2f} km/s, the dispersion that pixel integration alone produces at '
+            f'{float(velscale):.2f} km/s per pixel,'
+        )
+    else:
+        bound = (
+            f'{np.amin(floor):.2f}-{np.amax(floor):.2f} km/s, the dispersion that pixel '
+            'integration alone produces at the width of each pixel,'
+        )
     warnings.warn(
-        f'The instrumental dispersion of the {label} falls below {floor:.2f} km/s, the '
-        f'dispersion that pixel integration alone produces at {velscale:.2f} km/s per pixel, '
-        f'in {np.sum(below)} of {below.size} pixels.  A dispersion that small is not '
-        'plausible for spectra sampled well enough to measure kinematics from, and most '
-        'likely indicates an error in the vector -- check in particular that it is in km/s '
-        'and not angstroms.'
+        f'The instrumental dispersion of the {label} falls below {bound} in {np.sum(below)} '
+        f'of {below.size} pixels.  A dispersion that small is not plausible for spectra '
+        'sampled well enough to measure kinematics from, and most likely indicates an error '
+        'in the vector -- check in particular that it is in km/s and not angstroms.'
     )
     return False
 
@@ -384,10 +512,17 @@ class ResolutionMatch:
     unmatched : :class:`numpy.ndarray`
         Boolean, True where the target resolution could not be reached without
         deconvolution.  All False unless ``sigma_floor`` constrained the offset.
-    velscale : float
-        Velocity scale of the grid, in km/s per pixel.
+    velscale : float, :class:`numpy.ndarray`
+        The width of each pixel of the grid, in km/s: a scalar for a
+        logarithmic grid, or one value per pixel.
     epsilon_sigma : float
         The requested minimum kernel dispersion, in pixels.
+    achieved : :class:`numpy.ndarray`, optional
+        The instrumental dispersion the matched spectrum carries at each pixel,
+        in km/s, as the model of the matching predicts it.  Wherever the
+        matching succeeds this is the target less ``dvar_inst``; where it
+        cannot, it is what the floor kernel actually leaves.  None if no
+        matching was performed.
 
     Attributes
     ----------
@@ -397,18 +532,24 @@ class ResolutionMatch:
         As above.
     unmatched : :class:`numpy.ndarray`
         As above.
-    velscale : float
-        As above.
+    velscale : float, :class:`numpy.ndarray`
+        As above: a float for a scalar, otherwise a float array.
     epsilon_sigma : float
+        As above.
+    achieved : :class:`numpy.ndarray`, None
         As above.
     """
 
-    def __init__(self, kernel_sigma, dvar_inst, unmatched, velscale, epsilon_sigma):
+    def __init__(
+        self, kernel_sigma, dvar_inst, unmatched, velscale, epsilon_sigma, achieved=None
+    ):
         self.kernel_sigma = kernel_sigma
         self.dvar_inst = float(dvar_inst)
         self.unmatched = unmatched
-        self.velscale = float(velscale)
+        _velscale = np.asarray(velscale, dtype=float)
+        self.velscale = float(_velscale) if _velscale.ndim == 0 else _velscale
         self.epsilon_sigma = float(epsilon_sigma)
+        self.achieved = achieved
 
     @classmethod
     def identity(cls, npix, velscale, epsilon_sigma=VARSMOOTH_MIN_SIG):
@@ -424,8 +565,9 @@ class ResolutionMatch:
         ----------
         npix : int
             Number of pixels in the spectra that were not matched.
-        velscale : float
-            Velocity scale of their grid, in km/s per pixel.
+        velscale : float, :class:`numpy.ndarray`
+            The width of each pixel of their grid, in km/s; a scalar for a
+            logarithmic grid.
         epsilon_sigma : float, optional
             Recorded for provenance only; it had no effect.
 
@@ -453,6 +595,7 @@ class ResolutionMatch:
         """
         The kernel dispersion in pixels, which is what ``varsmooth`` clips.
 
+        Each pixel's kernel is divided by that pixel's own width in velocity.
         None if no matching was performed.
         """
         return None if self.kernel_sigma is None else self.kernel_sigma / self.velscale
@@ -515,18 +658,18 @@ class ResolutionMatch:
 
 
 def match_resolution(
-    idsp_from, idsp_to, velscale, epsilon_sigma=VARSMOOTH_MIN_SIG, sigma_floor=0.0
+    idsp_from, idsp_to, velscale, epsilon_sigma=VARSMOOTH_MIN_SIG, sigma_floor=0.0,
+    varsmooth_oversample=None
 ):
     r"""
     Compute the kernel that brings one resolution to another, and the offset.
 
     Both inputs are the **pre-pixelized** instrumental dispersion in km/s,
-    sampled on the same logarithmic grid.
+    sampled on the same grid, which may be of any kind.  The resolution is
+    matched in the second moment of the line-spread function.
 
-    The construction
-    ----------------
-
-    The kernel that would match the two resolutions exactly has variance
+    **The construction.**  The kernel that would match the two resolutions
+    exactly has variance
 
     .. math::
 
@@ -536,20 +679,28 @@ def match_resolution(
     which is negative wherever the spectrum being prepared is already of
     *lower* resolution than the target, and therefore unusable as it stands.
     Rather than trimming or masking those regions, a single constant
-    :math:`\delta^2` is subtracted from the whole vector:
+    :math:`\delta^2` is subtracted from the whole vector.  With
+    :math:`v_{\rm pix}(\lambda)` the width of each pixel in km/s, so that
+    :math:`\epsilon_\sigma v_{\rm pix}` is the target minimum kernel in km/s,
 
     .. math::
 
-        \delta^2 &= \min_\lambda {\rm res\_match} - \epsilon_\sigma^2 \\
+        \delta^2 &= \min_\lambda \left[{\rm res\_match}(\lambda)
+                    - (\epsilon_\sigma v_{\rm pix}(\lambda))^2\right] \\
         {\rm kernel}(\lambda) &= \sqrt{{\rm res\_match}(\lambda) - \delta^2} \\
         {\rm dvar\_inst} &= \delta^2
 
     Two things follow immediately, and are the reason for this form.  The
     kernel is **real everywhere**, since
-    :math:`{\rm res\_match} - \delta^2 \geq \epsilon_\sigma^2 > 0` by
-    construction -- no deconvolution, and no special case to detect.  And the
-    smallest kernel is **exactly** :math:`\epsilon_\sigma`, so no fudge factor
-    is needed to keep the extremal pixel from being masked.
+    :math:`{\rm res\_match} - \delta^2 \geq (\epsilon_\sigma v_{\rm pix})^2 > 0`
+    by construction -- no deconvolution, and no special case to detect.  And
+    the kernel is at least :math:`\epsilon_\sigma` **pixels** wide at every
+    pixel, and **exactly** that at one, so no fudge factor is needed to keep the
+    extremal pixel from being masked.  On a logarithmic grid
+    :math:`v_{\rm pix}` is a constant and the minimum is simply that of
+    :math:`{\rm res\_match}`; on any other grid the extremal pixel is the one
+    where the matching kernel is narrowest *in pixels*, which need not be where
+    it is narrowest in km/s.
 
     :math:`\delta^2` is **signed**, which is the substantive departure from
     ``mangadap``: its offset is :math:`\min(0, \ldots)` and so can only ever
@@ -557,14 +708,34 @@ def match_resolution(
     makes the regime where the template is left at *higher* resolution than the
     galaxy reachable, which is what holds the fitted dispersion away from zero.
 
+    **Achieving the target, not only requesting it.**  The convolution adds
+    :math:`E_1(k)` pixels squared beyond its kernel (see
+    :func:`varsmooth_excess`).  If ``varsmooth_oversample`` is given, the
+    kernel is chosen so that the variance the convolution *applies*,
+    :math:`g(k) = k^2 + E_1(k)` pixels squared, rather than :math:`k^2`, makes
+    up the difference.  :math:`g` increases monotonically, so it is inverted by
+    interpolating a table of it; it depends on the widest kernel through
+    :math:`D`, so the kernel is solved for iteratively.  The smallest variance
+    the matching can add then becomes :math:`g(\epsilon_\sigma)` pixels squared
+    rather than :math:`\epsilon_\sigma^2`, which enters the offset and, where
+    ``sigma_floor`` constrains it, the unmatched pixels.
+
+    Whether or not it is corrected for, :attr:`ResolutionMatch.achieved` gives
+    the resolution the convolved spectrum carries under the model used: the
+    target less ``dvar_inst`` wherever the matching succeeds, and what the
+    floor kernel leaves where it cannot.  Anything done to the spectrum after
+    the convolution is the caller's to account for, in ``idsp_to``.
+
     Parameters
     ----------
     idsp_from : :class:`numpy.ndarray`
         Instrumental dispersion of the spectrum being prepared, in km/s.
     idsp_to : :class:`numpy.ndarray`
         Instrumental dispersion to match, in km/s, on the same grid.
-    velscale : float
-        Velocity scale of the grid, in km/s per pixel.
+    velscale : float, :class:`numpy.ndarray`
+        The width of each pixel of the grid, in km/s: a scalar for a
+        logarithmic grid, or one value per pixel for any other (see
+        :attr:`~dc3.core.sampling.SpectralGrid.pixel_velocity`).
     epsilon_sigma : float, optional
         Target for the *minimum* kernel dispersion, in pixels.  Defaults to
         :data:`VARSMOOTH_MIN_SIG`, below which the convolution silently clips;
@@ -574,6 +745,11 @@ def match_resolution(
         otherwise be negative.  Zero forbids a negative offset altogether.
         Where the constraint bites, the affected pixels cannot be matched and
         are flagged.
+    varsmooth_oversample : int, optional
+        The oversampling the kernel will be applied with, by
+        :func:`apply_kernel`.  If given, the kernel accounts for the variance
+        the convolution adds beyond it.  If None, the kernel alone is assumed
+        to be applied.
 
     Returns
     -------
@@ -584,7 +760,8 @@ def match_resolution(
     ------
     DC3ResolutionError
         Raised if the inputs disagree in shape, are not positive, or if
-        ``epsilon_sigma`` is below what the convolution can apply.
+        ``epsilon_sigma`` is below what the convolution can apply.  A
+        ``velscale`` array must have one element per pixel.
 
     Warns
     -----
@@ -603,6 +780,14 @@ def match_resolution(
         )
     if np.any(_from <= 0) or np.any(_to <= 0):
         raise DC3ResolutionError('Instrumental dispersions must be positive.')
+    _velscale = np.asarray(velscale, dtype=float)
+    if _velscale.ndim != 0 and _velscale.shape != _from.shape:
+        raise DC3ResolutionError(
+            f'velscale must be a scalar or have one element per pixel; got shape '
+            f'{_velscale.shape} for {_from.size} pixels.'
+        )
+    if np.any(_velscale <= 0):
+        raise DC3ResolutionError('The pixel widths in velocity must be positive.')
     if epsilon_sigma < VARSMOOTH_MIN_SIG:
         raise DC3ResolutionError(
             f'epsilon_sigma of {epsilon_sigma} pixels is below the {VARSMOOTH_MIN_SIG} pixels '
@@ -612,25 +797,35 @@ def match_resolution(
             'difference and biasing the astrophysical dispersion low.'
         )
 
-    # The exactly-matching kernel, squared.  Negative where the spectrum being
-    # prepared is already of lower resolution than the target.
+    # The variance the matching must add, in (km/s)^2.  Negative where the
+    # spectrum being prepared is already of lower resolution than the target.
     res_match = np.square(_to) - np.square(_from)
-    epsilon_kms2 = np.square(epsilon_sigma * velscale)
+    pixel2 = np.square(_velscale)
 
-    # The signed constant offset.  Subtracting it makes the kernel real
-    # everywhere and its minimum exactly epsilon_sigma.
-    dvar_inst = np.amin(res_match) - epsilon_kms2
+    if varsmooth_oversample is None:
+        kernel_pixels, dvar_inst, unmatched = _offset_and_kernel(
+            res_match, pixel2, epsilon_sigma, sigma_floor, np.square
+        )
+        applied = np.square(kernel_pixels)
+    else:
+        # The variance the convolution applies depends on the widest kernel,
+        # through D, so the kernel is solved for until that settles.  It
+        # changes the result only through the small 1/(mD)^2 term, so a few
+        # iterations suffice.
+        kmax = np.sqrt(np.amax(np.clip(res_match / pixel2, epsilon_sigma ** 2, None)))
+        for _ in range(50):
+            kernel_pixels, dvar_inst, unmatched = _offset_and_kernel(
+                res_match, pixel2, epsilon_sigma, sigma_floor,
+                _ConvolutionVariance(varsmooth_oversample, kmax)
+            )
+            converged = abs(np.amax(kernel_pixels) - kmax) <= 1e-10 * kmax
+            kmax = np.amax(kernel_pixels)
+            if converged:
+                break
+        applied = _ConvolutionVariance(varsmooth_oversample, kmax)(kernel_pixels)
 
-    # A negative offset leaves the prepared spectrum at lower resolution than
-    # the target, which is permitted only up to sigma_floor.
-    unmatched = np.zeros(res_match.shape, dtype=bool)
-    if dvar_inst < -np.square(sigma_floor):
-        dvar_inst = -np.square(sigma_floor)
-        # With the offset clamped, the kernel is no longer real everywhere;
-        # those pixels cannot be matched without deconvolution.
-        unmatched = res_match - dvar_inst < epsilon_kms2
-
-    kernel_sigma = np.sqrt(np.clip(res_match - dvar_inst, epsilon_kms2, None))
+    kernel_sigma = kernel_pixels * _velscale
+    achieved = np.sqrt(np.square(_from) + applied * pixel2)
 
     if dvar_inst < 0:
         warnings.warn(
@@ -647,33 +842,240 @@ def match_resolution(
             'Raise sigma_floor to accept a larger pedestal, or mask these regions.'
         )
 
-    return ResolutionMatch(kernel_sigma, dvar_inst, unmatched, velscale, epsilon_sigma)
+    return ResolutionMatch(
+        kernel_sigma, dvar_inst, unmatched, velscale, epsilon_sigma, achieved=achieved
+    )
 
 
-def apply_kernel(loglam, flux, match, oversample=1):
+class _ConvolutionVariance:
+    r"""
+    The variance the convolution applies for a kernel, in pixels squared.
+
+    :math:`g(k) = k^2 + E_1(k)`, with :math:`E_1` from :func:`varsmooth_excess`
+    at a fixed oversampling and widest kernel.  Callable, and invertible by
+    :meth:`inverse`, since :math:`g` increases monotonically.
+
+    Parameters
+    ----------
+    oversample : int
+        The oversampling passed to ``varsmooth``.
+    kmax : float
+        The widest kernel in the spectrum, in pixels.
+    """
+
+    def __init__(self, oversample, kmax):
+        self.oversample = oversample
+        self.kmax = kmax
+
+    def __call__(self, k):
+        """Return :math:`g(k)`."""
+        _k = np.asarray(k, dtype=float)
+        return np.square(_k) + varsmooth_excess(_k, self.oversample, self.kmax / _k)
+
+    def inverse(self, variance, epsilon_sigma):
+        r"""
+        Return the kernel that applies a given variance.
+
+        Parameters
+        ----------
+        variance : :class:`numpy.ndarray`
+            The variance to apply, in pixels squared; at least
+            :math:`g(\epsilon_\sigma)`.
+        epsilon_sigma : float
+            The smallest kernel, in pixels.
+
+        Returns
+        -------
+        :class:`numpy.ndarray`
+            The kernel, in pixels.
+        """
+        # Tabulated finely enough that interpolating it is exact to well below
+        # anything measurable: 4096 points spaced by about 0.1 per cent
+        upper = np.sqrt(np.amax(variance)) + 1.0
+        k = np.geomspace(epsilon_sigma, upper, 4096)
+        return np.interp(variance, self(k), k)
+
+
+def _offset_and_kernel(res_match, pixel2, epsilon_sigma, sigma_floor, applied):
+    r"""
+    Return the kernel, the signed offset, and the unmatched pixels.
+
+    The construction of :func:`match_resolution`, for a given relation between
+    the kernel and the variance it applies.
+
+    Parameters
+    ----------
+    res_match : :class:`numpy.ndarray`
+        The variance the matching must add at each pixel, in
+        :math:`({\rm km/s})^2`.
+    pixel2 : float, :class:`numpy.ndarray`
+        The square of each pixel's width, in :math:`({\rm km/s})^2`.
+    epsilon_sigma : float
+        The smallest kernel, in pixels.
+    sigma_floor : float
+        The largest pedestal permitted, in km/s.
+    applied : callable
+        The variance a kernel applies, in pixels squared, as a function of the
+        kernel in pixels.  If it has an ``inverse`` method, that finds the
+        kernel; otherwise the variance is taken to be :math:`k^2`.
+
+    Returns
+    -------
+    tuple
+        The kernel at each pixel, in pixels; the offset, ``dvar_inst``, in
+        :math:`({\rm km/s})^2`; and the boolean unmatched pixels.
+    """
+    # The smallest variance the matching can add at each pixel, in (km/s)^2
+    floor = applied(epsilon_sigma) * pixel2
+
+    # The signed constant offset.  Subtracting it leaves every pixel needing at
+    # least the floor, and exactly the floor at one pixel.
+    dvar_inst = np.amin(res_match - floor)
+
+    # A negative offset leaves the prepared spectrum at lower resolution than
+    # the target, which is permitted only up to sigma_floor.
+    unmatched = np.zeros(res_match.shape, dtype=bool)
+    if dvar_inst < -np.square(sigma_floor):
+        dvar_inst = -np.square(sigma_floor)
+        # With the offset clamped, those pixels would need less than the floor,
+        # which only a deconvolution could give; they are held at the floor.
+        unmatched = res_match - dvar_inst < floor
+
+    required = np.maximum((res_match - dvar_inst) / pixel2, applied(epsilon_sigma))
+    if hasattr(applied, 'inverse'):
+        kernel = applied.inverse(required, epsilon_sigma)
+    else:
+        kernel = np.sqrt(required)
+    return kernel, float(dvar_inst), unmatched
+
+
+def _break_kernel_uniformity(sig, oversample=1):
+    r"""
+    Perturb a kernel so that ``varsmooth`` cannot find it exactly uniform.
+
+    A workaround for the upstream defect described under
+    :data:`VARSMOOTH_MIN_SIG`.  Following Cappellari (2023, Algorithm 1),
+    :func:`ppxf.ppxf_util.varsmooth` stretches the coordinate so that pixel
+    :math:`i` spans :math:`m\sigma_{\rm max}/\sigma_i` samples, with :math:`m`
+    the oversampling, and then places :math:`n = \lceil S \rceil` samples
+    uniformly over the stretched span
+
+    .. math::
+
+        S = m \sum_{i=1}^{N-1} \frac{\sigma_{\rm max}}{\sigma_i}.
+
+    For an exactly uniform kernel :math:`S = m(N-1)` is a whole number, so
+    :math:`n` is one short of the :math:`S + 1` the span needs, the samples
+    fall out of step with the input pixels, and the interpolation onto them and
+    back broadens the result.
+
+    **The largest element is increased**, by a factor :math:`1 + \epsilon`.
+    That scales the span of every other pixel by the same factor, so :math:`S`
+    grows by :math:`\epsilon S` while the stretched samples keep their place
+    relative to the input pixels; for a uniform kernel, :math:`n` becomes the
+    :math:`S + 1` needed.  Reducing an element instead would be undone wherever
+    it sits at ``varsmooth``'s 0.1-pixel clip -- which is exactly where the
+    minimum of a kernel built to ``epsilon_sigma = 0.1`` lies -- and would
+    shorten the span if it reduced a unique maximum.
+
+    **The size is a hundredth of a sample of growth**, :math:`\epsilon = 0.01 /
+    S`, and is bounded on both sides.  The growth must survive the rounding of
+    the sum that gives :math:`S`: one part in :math:`10^{12}`, for example, is
+    lost by twenty thousand pixels.  And it must stay below one sample, or
+    :math:`n` gains a point and the samples fall out of step again: a fixed
+    :math:`10^{-6}` broadens a uniform kernel just as the defect does once
+    :math:`S` passes a million.  It must also be scaled to :math:`S` rather
+    than to :math:`m(N-1)`, which a varying kernel's span exceeds many times
+    over; growing it by several samples would move every stretched sample and
+    change the result at the level of the interpolation error itself, a few per
+    cent of the peak.  A hundredth of a sample adds a sample to a varying kernel
+    only when the fractional part of :math:`S` exceeds 0.99, and otherwise
+    changes the result by a few parts in :math:`10^7` of its peak: numerically
+    irrelevant.
+
+    It is applied whether or not the kernel is exactly uniform, since a nearly
+    uniform kernel can reach a whole-number span once its variation is lost in
+    the same rounding.  The kernels :func:`match_resolution` builds are never
+    below the clip, so :math:`S` is computed without it.
+
+    .. todo::
+
+        Remove this once a ``ppxf`` release fixes the defect;
+        ``test_uniform_kernel_triggers_the_upstream_off_by_one`` fails when it
+        does.
+
+    Parameters
+    ----------
+    sig : :class:`numpy.ndarray`
+        The kernel dispersion, in pixels.
+    oversample : int, optional
+        The oversampling that will be passed to ``varsmooth``.
+
+    Returns
+    -------
+    :class:`numpy.ndarray`
+        A perturbed copy; the input is not modified.
+    """
+    _sig = np.array(sig, dtype=float)
+    imax = np.argmax(_sig)
+    # The stretched span varsmooth will compute, in samples
+    span = oversample * np.sum(_sig[imax] / _sig[1:])
+    _sig[imax] *= 1 + 0.01 / span
+    return _sig
+
+
+def apply_kernel(flux, match, oversample=2):
     r"""
     Convolve a spectrum with a variable-dispersion Gaussian kernel.
 
     Wraps :func:`ppxf.ppxf_util.varsmooth`, keeping the ``ppxf`` import in one
-    place.  The coordinate passed is :math:`\log_{10}\lambda`, for a reason
-    worth stating: the algorithm converts the kernel dispersion to pixels using
-    a *centred finite-difference* gradient of the coordinate rather than a
-    declared pixel size, which is exact only where the sampling is uniform.  On
-    a logarithmic grid it is.
+    place.
+
+    **The coordinate passed is the pixel index**, ``numpy.arange(npix)``, and
+    the kernel is given in pixels, :attr:`ResolutionMatch.kernel_sigma_pixels`.
+    ``varsmooth`` uses its coordinate only to convert the kernel to pixels, by a
+    *centred finite-difference* gradient, which is exact only where the
+    sampling is uniform.  Supplying the kernel already in pixels, each divided
+    by its own pixel's width, makes that conversion exact on any grid: at a
+    jump in the sampling a centred difference would give the pixels either side
+    the average of the two sizes.  On a logarithmic grid the result is the same
+    as passing :math:`\log_{10}\lambda`.
+
+    It does **not** make the convolution exact on an irregular grid.  Inside
+    ``varsmooth`` the convolution runs in pixel space whatever the coordinate,
+    so a kernel whose footprint spans pixels of different sizes treats them as
+    equal.  That is second order where the pixel size changes smoothly, and is
+    what the guard bands at a jump in the sampling are for.
+
+    The kernel is perturbed by a numerically irrelevant amount before it is
+    passed, to avoid an upstream defect; see :func:`_break_kernel_uniformity`.
+
+    **The oversampling must be at least 2.**  ``varsmooth`` interpolates the
+    spectrum linearly onto its stretched grid and back, which broadens every
+    line by about :math:`\Delta^2/6` in variance, :math:`\Delta` the pixel,
+    plus :math:`(1/mD)^2/6` from the return trip, :math:`m` being the
+    oversampling and :math:`D` the widest kernel in the spectrum relative to
+    the local one.  For a *uniform* kernel the stretched grid lines up with the
+    pixels and the excess is instead :math:`(1 - 1/m^2)/6`, which is **zero**
+    at :math:`m = 1`: a uniform kernel would be applied exactly, and one that
+    varies even slightly would add up to :math:`\Delta^2/3`.  Requiring
+    :math:`m \geq 2` keeps the uniform case within 0.04 :math:`\Delta^2` of the
+    rest, at about twice the cost of :math:`m = 1`.  See the developer
+    documentation on template preparation, and
+    ``doc/scripts/explore_convolution_methods.py``.
 
     Parameters
     ----------
-    loglam : :class:`numpy.ndarray`
-        :math:`\log_{10}` of the wavelength at each pixel.
     flux : :class:`numpy.ndarray`
-        Spectrum to convolve, of shape ``(npix,)`` or ``(nspec, npix)``.
+        Spectrum to convolve, of shape ``(npix,)`` or ``(nspec, npix)``, on the
+        grid ``match`` was computed for.
     match : ResolutionMatch
         The kernel to apply, from :func:`match_resolution`.
     oversample : int, optional
         Oversampling of the *internal* stretched grid used by the convolution,
-        which reduces its interpolation error.  This is a different knob from
-        ``velscale_ratio``, which oversamples the *output* grid; the two
-        address different error terms.
+        which reduces its interpolation error; at least 2.  This is a different
+        knob from ``velscale_ratio``, which oversamples the *output* grid; the
+        two address different error terms.
 
     Returns
     -------
@@ -683,21 +1085,34 @@ def apply_kernel(loglam, flux, match, oversample=1):
     Raises
     ------
     DC3CodingError
-        Raised if ``match`` records that no matching was performed.  There is
-        no kernel to apply, and the caller should have skipped this step.
+        Raised if ``match`` records that no matching was performed, in which
+        case there is no kernel to apply and the caller should have skipped
+        this step; or if ``flux`` does not have one pixel per kernel element.
+    DC3ResolutionError
+        Raised if ``oversample`` is less than 2.
     """
     if not match.performed:
         raise DC3CodingError(
             'apply_kernel was called with a ResolutionMatch that was not performed; there is '
             'no kernel to apply.  Check ResolutionMatch.performed before convolving.'
         )
-    # varsmooth needs the kernel in the units of the coordinate it is given.
-    # On a log10 grid, d(log10 lambda) = dv / (c ln 10).
-    sigma_loglam = match.kernel_sigma / (SPEED_OF_LIGHT * np.log(10.0))
-
+    if oversample < 2:
+        raise DC3ResolutionError(
+            f'oversample must be at least 2; got {oversample}.  At 1, varsmooth applies a '
+            'uniform kernel exactly but adds up to a third of a pixel squared of variance to '
+            'one that varies, so the result would depend on whether the kernel happened to '
+            'be uniform.'
+        )
     _flux = np.asarray(flux, dtype=float)
+    sig = _break_kernel_uniformity(match.kernel_sigma_pixels, oversample=oversample)
+    if _flux.shape[-1] != sig.size:
+        raise DC3CodingError(
+            f'The spectrum has {_flux.shape[-1]} pixels, but the kernel was computed for '
+            f'{sig.size}.'
+        )
+    # The pixel index, whose centred gradient is exactly one, so varsmooth
+    # takes sig as the kernel in pixels unchanged
+    x = np.arange(sig.size, dtype=float)
     if _flux.ndim == 1:
-        return ppxf_util.varsmooth(loglam, _flux, sigma_loglam, oversample=oversample)
-    return np.array([
-        ppxf_util.varsmooth(loglam, f, sigma_loglam, oversample=oversample) for f in _flux
-    ])
+        return ppxf_util.varsmooth(x, _flux, sig, oversample=oversample)
+    return np.array([ppxf_util.varsmooth(x, f, sig, oversample=oversample) for f in _flux])

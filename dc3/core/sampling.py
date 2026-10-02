@@ -1,55 +1,44 @@
 r"""
-Spectral sampling: the logarithmic wavelength grid, and resampling onto it.
+Spectral sampling: describing a wavelength grid, and detecting how one is
+sampled.
 
-``dc3`` works throughout on a grid uniformly sampled in
+The galaxy data and the prepared templates are always uniformly sampled in
 :math:`\log_{10}\lambda`.  That is not a convenience: a Doppler shift is a pure
 *translation* on such a grid, which is what lets the galaxy be de-redshifted by
 an integer pixel shift (:mod:`~dc3.core.deredshift`) and the model be shifted by
-a phase ramp in Fourier space, neither of which redistributes flux.  Velocity
-and redshift conversions are in :mod:`~dc3.core.velocity`.
+a phase ramp in Fourier space, neither of which redistributes flux.  Template
+libraries, however, arrive sampled however their authors chose, so a
+:class:`SpectralGrid` can describe linear and irregular sampling as well, and
+:func:`sampling_type` determines which a wavelength vector has.
+
+Resampling onto a new grid is in :mod:`~dc3.core.resample`, and velocity and
+redshift conversions in :mod:`~dc3.core.velocity`.
 
 .. note::
 
-    :class:`Resample` and the grid helpers that support it are adapted from
-    ``mangadap/util/sampling.py`` (BSD 3-Clause); see ``licenses/README.rst``.
-    The same code also exists in ``pypeit/core/sampling.py``, but with the
-    covariance support commented out for want of a ``Covariance`` class, so the
-    ``mangadap`` version is the more complete one and is what is adopted here.
-
-    The substantive change is that the covariance is computed with
-    :class:`astropy.nddata.Covariance` rather than ``mangadap``'s own class,
-    which has since been upstreamed into ``astropy`` and generalized.  Three
-    call sites differ as a result: ``variance()`` became a property, ``full()``
-    became ``to_dense()``, and ``impose_triu`` became ``assume_symmetric``.
-
     :func:`grid_velocity_offset` is adapted from
     ``mangadap.proc.ppxffit.PPXFFit.ppxf_tpl_obj_voff`` (BSD 3-Clause), recast
-    in terms of the grid parameters rather than the wavelength vectors.
+    in terms of the grid parameters rather than the wavelength vectors, and
+    :func:`borders_to_centers` and :func:`centers_to_borders` are taken from
+    ``mangadap/util/sampling.py`` (BSD 3-Clause); see ``licenses/README.rst``.
 
 .. include:: ../include/links.rst
 """
 
-import warnings
-
 import numpy as np
-from astropy.nddata import Covariance
-from scipy import interpolate
 
 from ..pkg.exceptions import DC3Error
 from .velocity import SPEED_OF_LIGHT
 
 
 __all__ = [
-    'Resample',
+    'SpectralGrid',
     'borders_to_centers',
     'centers_to_borders',
     'dloglam_from_velscale',
-    'grid_borders',
-    'grid_centers',
-    'grid_from_wave',
-    'grid_npix',
     'grid_velocity_offset',
     'log_wavelength_grid',
+    'sampling_type',
     'velscale',
 ]
 
@@ -120,53 +109,6 @@ def log_wavelength_grid(log10lam0, dloglam, npix):
     return np.power(10.0, log10lam0 + dloglam * np.arange(npix, dtype=float))
 
 
-def grid_from_wave(wave, rtol=1e-6):
-    r"""
-    Recover the grid parameters from a wavelength vector, checking its sampling.
-
-    Parameters
-    ----------
-    wave : :class:`numpy.ndarray`
-        Wavelengths of the pixel centres, in ascending order.
-    rtol : float, optional
-        Relative tolerance on the uniformity of the logarithmic sampling.  The
-        test compares the spread of the pixel sizes against their mean.
-
-    Returns
-    -------
-    tuple
-        ``log10lam0`` and ``dloglam``.
-
-    Raises
-    ------
-    DC3Error
-        Raised if the vector is too short, is not ascending and positive, or is
-        not uniformly sampled in the logarithm of the wavelength.  ``dc3``
-        assumes logarithmic sampling everywhere, so a linear grid is rejected
-        here rather than producing subtly wrong velocities later; use
-        :class:`Resample` to convert one first.
-    """
-    _wave = np.atleast_1d(np.asarray(wave, dtype=float))
-    if _wave.size < 2:
-        raise DC3Error('A wavelength grid must have at least two pixels.')
-    if np.any(_wave <= 0):
-        raise DC3Error('Wavelengths must be positive.')
-    if np.any(np.diff(_wave) <= 0):
-        raise DC3Error('Wavelengths must be in ascending order.')
-
-    loglam = np.log10(_wave)
-    steps = np.diff(loglam)
-    dloglam = float(np.mean(steps))
-    if np.any(np.absolute(steps - dloglam) > rtol * dloglam):
-        raise DC3Error(
-            'Wavelength vector is not uniformly sampled in log10(wavelength).  dc3 requires a '
-            'logarithmic grid: a Doppler shift is then a pure translation, which is what allows '
-            'the galaxy to be de-redshifted without redistributing its flux.  Resample the '
-            'spectrum onto a logarithmic grid before ingesting it.'
-        )
-    return float(loglam[0]), dloglam
-
-
 def grid_velocity_offset(log10lam0_tpl, log10lam0_obj, dloglam_obj, velscale_ratio=1):
     r"""
     Return the velocity offset between two logarithmic grids of matched sampling.
@@ -220,130 +162,9 @@ def grid_velocity_offset(log10lam0_tpl, log10lam0_obj, dloglam_obj, velscale_rat
     return SPEED_OF_LIGHT * np.log(10.0) * (log10lam0_obj - reference)
 
 
-# ======================================================================
-# Adapted from mangadap/util/sampling.py; see the module documentation.
-# ======================================================================
-def grid_npix(rng=None, dx=None, log=False, base=10.0, default=None):
-    """
-    Determine the number of pixels needed for a given grid.
-
-    Parameters
-    ----------
-    rng : array-like, optional
-        Two-element array with the starting and ending coordinate of the pixel
-        centres.  If ``log`` is True this is still the linear coordinate, not
-        its logarithm.
-    dx : float, optional
-        Linear or logarithmic pixel width.
-    log : bool, optional
-        Bin the range logarithmically.
-    base : float, optional
-        Base of the logarithm.
-    default : int, optional
-        Number of pixels returned if either ``rng`` or ``dx`` is not provided.
-
-    Returns
-    -------
-    tuple
-        The number of pixels covering ``rng`` with pixels of width ``dx``, and
-        the range adjusted so that the number of pixels is an exact integer.
-
-    Raises
-    ------
-    DC3Error
-        Raised if the range is not a two-element vector.
-    """
-    if rng is None or dx is None:
-        return default, rng
-    if len(rng) != 2:
-        raise DC3Error('Range must be a 2-element vector.')
-
-    _rng = np.atleast_1d(rng).copy().astype(float)
-    npix = (
-        int(np.floor(np.diff(np.log(_rng))[0] / np.log(base) / dx) + 1) if log
-        else int(np.floor(np.diff(_rng)[0] / dx) + 1)
-    )
-    _rng[1] = (
-        np.power(base, np.log(_rng[0]) / np.log(base) + dx * (npix - 1)) if log
-        else _rng[0] + dx * (npix - 1)
-    )
-
-    # Guard against numerical precision losing the last pixel
-    if (
-        (not log and np.isclose(rng[1] - _rng[1], dx))
-        or (log and np.isclose((np.log(rng[1]) - np.log(_rng[1])) / np.log(base), dx))
-    ):
-        npix += 1
-        _rng[1] = (
-            np.power(base, np.log(_rng[0]) / np.log(base) + dx * (npix - 1)) if log
-            else _rng[0] + dx * (npix - 1)
-        )
-
-    return npix, _rng
-
-
-def grid_borders(rng, npix, log=False, base=10.0):
-    """
-    Determine the bin edges of a grid.
-
-    Parameters
-    ----------
-    rng : array-like
-        Two-element array with the (geometric) centres of the first and last
-        pixel.
-    npix : int
-        Number of pixels.
-    log : bool, optional
-        The range is logarithmically sampled.
-    base : float, optional
-        Base of the logarithmic sampling.
-
-    Returns
-    -------
-    tuple
-        The grid borders, of shape ``(npix+1,)``, and the step per grid point.
-    """
-    if log:
-        _rng = np.log(rng) / np.log(base)
-        dlogx = np.diff(_rng)[0] / (npix - 1.)
-        borders = np.power(base, np.linspace(*(_rng / dlogx + [-0.5, 0.5]), num=npix + 1) * dlogx)
-        return borders, dlogx
-    dx = np.diff(rng)[0] / (npix - 1.)
-    borders = np.linspace(*(np.atleast_1d(rng) / dx + np.array([-0.5, 0.5])), num=npix + 1) * dx
-    return borders, dx
-
-
-def grid_centers(rng, npix, log=False, base=10.0):
-    """
-    Determine the (geometric) centres of the pixels in a grid.
-
-    Parameters
-    ----------
-    rng : array-like
-        Two-element array with the (geometric) centres of the first and last
-        pixel.
-    npix : int
-        Number of pixels.
-    log : bool, optional
-        The range is logarithmically sampled.
-    base : float, optional
-        Base of the logarithmic sampling.
-
-    Returns
-    -------
-    tuple
-        The pixel centres, of shape ``(npix,)``, and the step per grid point.
-    """
-    if log:
-        _rng = np.log(rng) / np.log(base)
-        dlogx = np.diff(_rng)[0] / (npix - 1.)
-        centers = np.power(base, np.linspace(*(_rng / dlogx), num=npix) * dlogx)
-        return centers, dlogx
-    dx = np.diff(rng)[0] / (npix - 1.)
-    centers = np.linspace(*(np.atleast_1d(rng) / dx), num=npix) * dx
-    return centers, dx
-
-
+# ----------------------------------------------------------------------
+# Describing and detecting the sampling of a wavelength vector
+# ----------------------------------------------------------------------
 def borders_to_centers(borders, log=False):
     """
     Convert a set of bin borders to bin centres.
@@ -393,437 +214,576 @@ def centers_to_borders(x, log=False):
     return np.append(x[:-1] - dx / 2, x[-1] + np.array([-1, 1]) * dx[-1] / 2)
 
 
-class Resample:
-    r"""
-    Resample regularly or irregularly sampled data onto a new grid, by
-    integration.
-
-    This is a generalization of :func:`ppxf.ppxf_util.log_rebin`.
-
-    The abscissa (``x``) or the pixel borders (``xBorders``) should be given for
-    irregularly sampled data.  For linearly or geometrically sampled data the
-    abscissa can instead be generated from ``xRange``.  If ``x``, ``xBorders``
-    and ``xRange`` are all None, the coordinates are assumed to be
-    ``np.arange(y.shape[-1])``.
-
-    The data are resampled by constructing the borders of the output grid from
-    the ``new*`` keywords and integrating the input function between them.
-    Output beyond the limits of the input is set to ``ext_value``.
-
-    ``y`` may be 1-D or 2-D; the abscissa is always 1-D.  For 2-D input the
-    resampling runs along the last axis.
-
-    The function is assumed to be a step function (``step=True``).  If the
-    output grid is much finer than the input, that assumption becomes visible;
-    set ``step=False`` to assume linear interpolation between the input points
-    instead.
+def _validate_wave(wave):
+    """
+    Return a wavelength vector as a float array, checking it can be a grid.
 
     Parameters
     ----------
-    y : :class:`numpy.ndarray`
-        Data to resample, 1-D or 2-D.
-    e : :class:`numpy.ndarray`, optional
-        1-sigma errors on ``y``, with the same shape.
-    mask : :class:`numpy.ndarray`, optional
-        Boolean mask, True where a value should be ignored, with the same shape
-        as ``y``.
-    x : :class:`numpy.ndarray`, optional
-        Abscissa coordinates of the input pixel centres.
-    xRange : array-like, optional
-        Two-element range of the input pixel centres.
-    xBorders : :class:`numpy.ndarray`, optional
-        Borders of the input pixels.
-    inLog : bool, optional
-        The input grid is geometrically sampled.
-    newx : :class:`numpy.ndarray`, optional
-        Coordinates of the output pixel centres.
-    newRange : array-like, optional
-        Two-element range of the output pixel centres.
-    newBorders : :class:`numpy.ndarray`, optional
-        Borders of the output pixels.
-    newpix : int, optional
-        Number of output pixels.
-    newLog : bool, optional
-        Sample the output grid geometrically.
-    newdx : float, optional
-        Output pixel width.
-    base : float, optional
-        Base of the logarithm used for geometric sampling.
-    ext_value : float, optional
-        Value assigned to output pixels beyond the input range.  If None, no
-        such assignment is made.
-    conserve : bool, optional
-        Conserve the integral of the input, rather than its density.
-    step : bool, optional
-        Treat the input as a step function rather than linearly interpolating
-        between the input points.
-    covar : bool, optional
-        Compute the covariance between output pixels induced by the resampling.
-        Only available for step resampling.
+    wave : array-like
+        Wavelengths of the pixel centres.
 
-    Attributes
-    ----------
-    x : :class:`numpy.ndarray`
-        Coordinates of the input pixel centres.
-    xborders : :class:`numpy.ndarray`
-        Borders of the input pixels.
-    outx : :class:`numpy.ndarray`
-        Coordinates of the output pixel centres.
-    outborders : :class:`numpy.ndarray`
-        Borders of the output pixels.
-    outy : :class:`numpy.ndarray`
-        The resampled data.
-    oute : :class:`numpy.ndarray`, None
-        The resampled 1-sigma errors.
-    outf : :class:`numpy.ndarray`
-        The fraction of each output pixel covered by valid input data.
-    covar : :class:`astropy.nddata.Covariance`, None
-        The covariance between output pixels, if requested.
+    Returns
+    -------
+    :class:`numpy.ndarray`
+        The wavelengths as a 1-D float array.
 
     Raises
     ------
     DC3Error
-        Raised if the input grid or the output grid is under- or
-        over-specified, if ``y`` is not a 1-D or 2-D array, if the shapes of
-        the errors or mask disagree with ``y``, or if the covariance is
-        requested without step resampling.
+        Raised if the vector has fewer than two elements, or is not positive
+        and strictly ascending.
+    """
+    _wave = np.atleast_1d(np.asarray(wave, dtype=float))
+    if _wave.ndim != 1:
+        raise DC3Error('A wavelength vector must be one-dimensional.')
+    if _wave.size < 2:
+        raise DC3Error('A wavelength grid must have at least two pixels.')
+    if np.any(_wave <= 0):
+        raise DC3Error('Wavelengths must be positive.')
+    if np.any(np.diff(_wave) <= 0):
+        raise DC3Error('Wavelengths must be in strictly ascending order.')
+    return _wave
+
+
+def _uniform_fit(x):
+    """
+    Fit a uniform grid to a coordinate vector by least squares.
+
+    Parameters
+    ----------
+    x : :class:`numpy.ndarray`
+        The coordinate of each pixel centre: the wavelength for a linear grid,
+        its logarithm for a logarithmic one.
+
+    Returns
+    -------
+    tuple
+        The fitted start and step, and the largest departure of ``x`` from the
+        fitted grid in units of the step, i.e. in pixels.
+    """
+    i = np.arange(x.size, dtype=float)
+    step, start = np.polyfit(i, x, 1)
+    return float(start), float(step), float(np.amax(np.absolute(x - start - step * i)) / step)
+
+
+def _departure_limit(wave, tol):
+    """
+    Return the largest departure from a regular grid, in pixels, to accept.
+
+    The larger of ``tol`` and the float32 floor described in
+    :func:`sampling_type`.
+
+    Parameters
+    ----------
+    wave : :class:`numpy.ndarray`
+        Wavelengths of the pixel centres, already validated.
+    tol : float
+        The requested tolerance, in pixels.
+
+    Returns
+    -------
+    float
+        The limit, in pixels.
+    """
+    return max(tol, np.finfo(np.float32).eps * np.amax(wave[1:] / np.diff(wave)))
+
+
+def sampling_type(wave, tol=1e-3):
+    r"""
+    Determine whether a wavelength vector is sampled linearly, logarithmically,
+    or neither.
+
+    Each regular description is tested by fitting a uniform grid, in the
+    wavelength or in its logarithm, and measuring how far any pixel centre lies
+    from it, **in pixels**.  A description is accepted if that departure is
+    within the tolerance.
+
+    **The tolerance has a floor set by float32 rounding.**  Wavelength vectors
+    are commonly stored in single precision, and a vector read that way and
+    converted to double precision still carries the rounding, with no trace of
+    it in the dtype.  Rounding to the nearest float32 displaces a wavelength by
+    up to half the float32 machine epsilon, :math:`\epsilon_{32}\lambda/2`
+    (:math:`\epsilon_{32} = 2^{-23}`), which is
+    :math:`\epsilon_{32}\lambda/(2\Delta\lambda)` pixels: about
+    :math:`2\times10^{-3}` pixels at :math:`\lambda/\Delta\lambda = 4\times10^4`,
+    and :math:`3\times10^{-2}` at :math:`4\times10^5`.  The departure is
+    therefore compared against the larger of ``tol`` and twice that,
+    :math:`\epsilon_{32}\lambda/\Delta\lambda`, so a regularly gridded vector is
+    never declared irregular merely because it was stored in single precision.
+    The floor only loosens the test, and only by the uncertainty the stored
+    values carry anyway.  It does not blur the distinctions that matter: a
+    logarithmic grid tested as linear departs by tens of pixels over any
+    realistic range, and a spliced grid drifts further with every pixel past
+    the splice.
+
+    A vector passing both tests is called logarithmic.  That happens only when
+    the vector spans so small a fraction of its own wavelength that the two
+    descriptions agree to within the tolerance everywhere, in which case the
+    choice makes no difference at that tolerance, and logarithmic is the
+    sampling the rest of ``dc3`` works in.
+
+    Parameters
+    ----------
+    wave : array-like
+        Wavelengths of the pixel centres, strictly ascending.
+    tol : float, optional
+        The largest acceptable departure from a regular grid, in pixels.  The
+        comparison uses the larger of this and the float32 floor described
+        above.
+
+    Returns
+    -------
+    str
+        ``'log'``, ``'linear'``, or ``'irregular'``.
+
+    Raises
+    ------
+    DC3Error
+        Raised if the vector cannot describe a grid; see :func:`_validate_wave`.
+    """
+    _wave = _validate_wave(wave)
+    limit = _departure_limit(_wave, tol)
+    if _uniform_fit(np.log10(_wave))[2] <= limit:
+        return 'log'
+    if _uniform_fit(_wave)[2] <= limit:
+        return 'linear'
+    return 'irregular'
+
+
+class SpectralGrid:
+    r"""
+    The wavelength sampling shared by a set of spectra.
+
+    Three kinds of sampling are supported:
+
+    =============  =============================================================
+    Kind           Description
+    =============  =============================================================
+    ``log``        Uniform in :math:`\log_{10}\lambda`: every pixel has the same
+                   width in velocity.  The only sampling the galaxy data and the
+                   prepared templates may have.
+    ``linear``     Uniform in :math:`\lambda`, as most stellar libraries are
+                   delivered.
+    ``irregular``  Anything else, described pixel by pixel -- for example a
+                   library spliced from sections sampled differently.
+    =============  =============================================================
+
+    Generally speaking, we recommend building a :class:`SpectralGrid` using
+    either :meth:`from_log_spacing`, :meth:`from_linear_spacing`, or
+    :meth:`from_vector`, instead of the direct constructor.
+
+    Instances are immutable, so any number of spectrum sets can share one.
+    The pixel centres and borders, and the quantities derived from them, are
+    computed once, on construction, and returned as read-only arrays.
+
+    **Pixel borders.**  A regular grid's borders follow exactly from its
+    parameters, and in its own convention: a logarithmic grid's centres are
+    the geometric centres of its pixels, a linear grid's the linear centres.
+
+    An irregular grid is best given its borders explicitly.  If only the pixel
+    centres are given, they are taken to be the **linear** centres of their
+    pixels, and the borders are derived by :func:`centers_to_borders`: each
+    pixel's lower border lies below its centre by half the distance to the
+    following centre, and the last pixel is as wide as its neighbour.  Neither
+    convention can be known to be right for an irregular grid, whose vector
+    does not say how it was built; linear is adopted because it is the clearer
+    assumption, and the two differ by only about :math:`1/(8\lambda/\Delta
+    \lambda)` of a pixel.  The derived borders are exact wherever the pixel size
+    is constant, and accurate to second order where it changes smoothly.
+    Where it jumps -- at the splice between two sections of a spliced library
+    -- the border just below the last pixel before the splice is misplaced, by
+    a quarter of the change in pixel size.  Supply the borders to avoid it.
+
+    Parameters
+    ----------
+    kind : str
+        ``'log'``, ``'linear'`` or ``'irregular'``.
+    npix : int
+        The number of pixels.
+    start, step : float, optional
+        For a regular grid, the coordinate of the first pixel centre and the
+        pixel size: in :math:`\log_{10}` of angstroms for ``log``, in
+        angstroms for ``linear``.
+    wave : :class:`numpy.ndarray`, optional
+        For an irregular grid, the pixel centres, in angstroms.
+    borders : :class:`numpy.ndarray`, optional
+        For an irregular grid, the ``npix + 1`` pixel borders, in angstroms.
+
+    Raises
+    ------
+    DC3Error
+        Raised if the parameters do not describe a valid grid of the given
+        kind.
     """
 
-    def __init__(
-        self, y, e=None, mask=None, x=None, xRange=None, xBorders=None, inLog=False, newx=None,
-        newRange=None, newBorders=None, newpix=None, newLog=True, newdx=None, base=10.0,
-        ext_value=0.0, conserve=False, step=True, covar=False
-    ):
-        if np.sum([inp is not None for inp in [x, xRange, xBorders]]) != 1:
-            raise DC3Error(
-                'One and only one of the x, xRange, and xBorders arguments should be provided.'
-            )
-        if np.sum([inp is not None for inp in [newx, newRange, newBorders]]) != 1:
-            raise DC3Error(
-                'One and only one of the newx, newRange, and newBorders arguments should be '
-                'provided.'
-            )
-        if not isinstance(y, np.ndarray):
-            raise DC3Error('Input vector must be a numpy.ndarray.')
-        if y.ndim > 2:
-            raise DC3Error('Input must be a 1D or 2D array.')
-        if covar and not step:
-            raise DC3Error('Covariance is currently only calculated for step resampling.')
+    def __init__(self, kind, npix, start=None, step=None, wave=None, borders=None):
+        if kind not in ['log', 'linear', 'irregular']:
+            raise DC3Error(f'Unknown grid kind {kind!r}; use "log", "linear" or "irregular".')
+        self._kind = kind
+        self._npix = int(npix)
+        if self._npix < 2:
+            raise DC3Error('A wavelength grid must have at least two pixels.')
 
-        # Set up the data, errors, and mask.  The mask is copied rather than
-        # adopted, because the masks of y and e are merged into it below and
-        # doing that in place would modify the caller's array.
-        self.y = y.filled(0.0) if isinstance(y, np.ma.MaskedArray) else y.copy()
-        self.twod = self.y.ndim == 2
-        self.e = (
-            None if e is None
-            else e.filled(0.0) if isinstance(e, np.ma.MaskedArray) else e.copy()
-        )
-        self.m = np.zeros(self.y.shape, dtype=bool) if mask is None else np.array(mask, dtype=bool)
-
-        if self.e is not None and self.e.shape != self.y.shape:
-            raise DC3Error(
-                f'Error array shape {self.e.shape} does not match the data shape {self.y.shape}.'
-            )
-        if self.m.shape != self.y.shape:
-            raise DC3Error(
-                f'Mask array shape {self.m.shape} does not match the data shape {self.y.shape}.'
-            )
-
-        # Merge in any masks carried by the input arrays themselves
-        if isinstance(y, np.ma.MaskedArray):
-            self.m |= y.mask
-        if e is not None and isinstance(e, np.ma.MaskedArray):
-            self.m |= e.mask
-
-        # The input coordinates
-        nx = self.y.shape[-1] if x is None and xBorders is None else None
-        self.x, self.xborders = self._coordinate_grid(
-            x=x, rng=xRange, nx=nx, borders=xBorders, log=inLog, base=base
-        )
-
-        # If conserving the integral, the input is integrated over the pixel
-        # width, so convert it to a density
-        if conserve:
-            self.y /= (
-                np.diff(self.xborders)[None, :] if self.twod else np.diff(self.xborders)
-            )
-
-        # The output coordinates
-        nx = (
-            self.x.size
-            if newx is None and newBorders is None and newpix is None and newdx is None
-            else newpix
-        )
-        self.outx, self.outborders = self._coordinate_grid(
-            x=newx, rng=newRange, nx=nx, borders=newBorders, dx=newdx, log=newLog, base=base
-        )
-
-        if covar:
-            self._resample_with_covariance()
+        if kind == 'irregular':
+            self._start = self._step = None
+            self._wave, self._borders = self._irregular_arrays(wave, borders)
+            self._loglam = np.log10(self._wave)
         else:
-            self.covar = None
-            self.outy = self._resample_step(self.y) if step else self._resample_linear(self.y)
-            # The mask and the errors are always resampled as a step function
-            self.oute = None if self.e is None else self._resample_step(self.e, quad=True)
-            self.outf = (
-                self._resample_step(np.logical_not(self.m).astype(int))
-                / np.diff(self.outborders)
-            )
+            if start is None or step is None:
+                raise DC3Error(f'A {kind} grid needs both its start and its step.')
+            if step <= 0:
+                raise DC3Error(f'The pixel size must be positive; got {step}.')
+            if kind == 'linear' and start - step / 2 <= 0:
+                raise DC3Error('A linear grid must lie entirely at positive wavelengths.')
+            self._start, self._step = float(start), float(step)
+            # The grid's own coordinate, at the centres and at the borders
+            centers = self._start + self._step * np.arange(self._npix, dtype=float)
+            edges = self._start + self._step * (np.arange(self._npix + 1, dtype=float) - 0.5)
+            if kind == 'log':
+                self._wave, self._borders = np.power(10.0, centers), np.power(10.0, edges)
+                self._loglam = centers
+            else:
+                self._wave, self._borders = centers, edges
+                self._loglam = np.log10(centers)
 
-        # Convert back from a density unless the integral is being conserved
-        if not conserve:
-            width = np.diff(self.outborders)[None, :] if self.twod else np.diff(self.outborders)
-            self.outy /= width
-            if self.oute is not None:
-                self.oute /= width
-                if self.covar is not None:
-                    self.covar = self.covar.apply_new_variance(np.square(self.oute.T))
-
-        # Assign the extrapolated regions
-        if ext_value is not None:
-            indx = (
-                (self.outborders[:-1] < self.xborders[0])
-                | (self.outborders[1:] > self.xborders[-1])
-            )
-            if np.sum(indx) > 0:
-                self.outy[..., indx] = ext_value
-                self.outf[..., indx] = 0.
-                if self.oute is not None:
-                    self.oute[..., indx] = 0.
-
-    def _resample_with_covariance(self):
-        """
-        Resample by explicit matrix multiplication, tracking the covariance.
-
-        Resampling mixes neighbouring input pixels into each output pixel, which
-        correlates the output even when the input is uncorrelated.  Building the
-        operation as a matrix makes that correlation available; see
-        :func:`_resample_step_matrix`.
-        """
-        A = self._resample_step_matrix()
-        self.outy = np.dot(A, self.y.T).T
-        self.outf = (
-            np.dot(A, np.logical_not(self.m.T).astype(int)).T / np.diff(self.outborders)[..., :]
+        self._pixel_velocity = (
+            np.full(self._npix, velscale(self._step)) if kind == 'log'
+            else SPEED_OF_LIGHT * np.log(self._borders[1:] / self._borders[:-1])
         )
-        if self.e is None:
-            self.covar = Covariance.from_matrix_multiplication(
-                A, np.ones_like(self.x)
-            ).apply_new_variance(np.ones_like(self.outx))
-            self.oute = None
-            return
-        if self.twod:
-            covar = np.empty(self.y.shape[0], dtype=object)
-            for i in range(self.y.shape[0]):
-                covar[i] = Covariance.from_matrix_multiplication(
-                    A, np.square(self.e[i])
-                ).to_dense()
-            self.covar = Covariance(covar, assume_symmetric=True)
-            self.oute = np.sqrt(self.covar.variance.T)
-            return
-        self.covar = Covariance.from_matrix_multiplication(A, np.square(self.e))
-        self.oute = np.sqrt(self.covar.variance)
+        # Every array is shared by whoever holds the grid, so none may be
+        # modified in place.
+        for array in [self._wave, self._borders, self._loglam, self._pixel_velocity]:
+            array.flags.writeable = False
 
-    @staticmethod
-    def _coordinate_grid(x=None, rng=None, nx=None, dx=None, borders=None, log=False, base=10.0):
+    def _irregular_arrays(self, wave, borders):
         """
-        Construct the coordinate grid and its borders from what was provided.
+        Validate, and if necessary complete, the arrays of an irregular grid.
 
         Parameters
         ----------
-        x : :class:`numpy.ndarray`, optional
-            Pixel centres.
-        rng : array-like, optional
-            Two-element range of the pixel centres.
-        nx : int, optional
-            Number of pixels.
-        dx : float, optional
-            Pixel width.
-        borders : :class:`numpy.ndarray`, optional
-            Pixel borders.
-        log : bool, optional
-            Sample geometrically.
-        base : float, optional
-            Base of the logarithm.
+        wave : :class:`numpy.ndarray`
+            The pixel centres.
+        borders : :class:`numpy.ndarray`, None
+            The pixel borders, or None to derive them from the centres.
 
         Returns
         -------
         tuple
-            The pixel centres and the pixel borders.
+            Copies of the centres and the borders, which the caller's arrays
+            therefore do not share.
 
         Raises
         ------
         DC3Error
-            Raised if both ``x`` and ``borders`` are given, or if there is too
-            little information to construct the grid.
+            Raised if the arrays are inconsistent with each other or with
+            ``npix``.
         """
-        if x is not None and borders is not None:
-            raise DC3Error(
-                'Provide either x or borders, not both; this function does not check that the '
-                'two are consistent with one another.'
-            )
-        if (x is not None or borders is not None) and rng is not None:
-            warnings.warn('Provided both x or borders and the range.  Ignoring the range.')
-        if x is None and borders is not None:
-            return borders_to_centers(borders, log=log), borders
-        if x is not None and borders is None:
-            return x, centers_to_borders(x, log=log)
+        if wave is None:
+            raise DC3Error('An irregular grid needs its pixel centres.')
+        # Copied, because the grid makes its arrays read-only, and
+        # _validate_wave does not copy a float array it is given
+        _wave = _validate_wave(wave).copy()
+        if _wave.size != self._npix:
+            raise DC3Error(f'Expected {self._npix} pixel centres; got {_wave.size}.')
+        if borders is None:
+            return _wave, centers_to_borders(_wave, log=False)
+        _borders = _validate_wave(borders).copy()
+        if _borders.size != self._npix + 1:
+            raise DC3Error(f'Expected {self._npix + 1} pixel borders; got {_borders.size}.')
+        if np.any(_wave <= _borders[:-1]) or np.any(_wave >= _borders[1:]):
+            raise DC3Error('Every pixel centre must lie strictly within its borders.')
+        return _wave, _borders
 
-        if rng is None and nx is None:
-            raise DC3Error('Insufficient input to construct the coordinate grid.')
-
-        if rng is None:
-            # A uniform pixel grid
-            return np.arange(nx, dtype=float) + 0.5, np.arange(nx + 1, dtype=float)
-
-        if dx is not None and nx is not None:
-            warnings.warn(
-                'Provided rng, dx, and nx, which over-specifies the grid; rng and nx take '
-                'precedence.'
-            )
-        if nx is not None:
-            borders = grid_borders(rng, nx, log=log, base=base)[0]
-            return borders_to_centers(borders, log=log), borders
-
-        nx, _rng = grid_npix(rng=rng, dx=dx, log=log, base=base)
-        borders = grid_borders(_rng, nx, log=log, base=base)[0]
-        return borders_to_centers(borders, log=log), borders
-
-    def _resample_linear(self, v, quad=False):
-        """
-        Resample a vector, interpolating linearly between the input points.
-
-        Parameters
-        ----------
-        v : :class:`numpy.ndarray`
-            The vector to resample.
-        quad : bool, optional
-            Sum in quadrature, as required for errors.
-
-        Returns
-        -------
-        :class:`numpy.ndarray`
-            The resampled vector.
-        """
-        combinedX = np.append(self.outborders, self.x)
-        srt = np.argsort(combinedX)
-        combinedX = combinedX[srt]
-
-        border = np.ones(combinedX.size, dtype=bool)
-        border[self.outborders.size:] = False
-        k = np.arange(combinedX.size)[border[srt]]
-
-        if self.twod:
-            interp = interpolate.interp1d(
-                self.x, v, axis=-1, assume_sorted=True, fill_value='extrapolate'
-            )
-            combinedY = np.append(interp(self.outborders), v, axis=-1)[:, srt]
-            integrand = (combinedY[:, 1:] + combinedY[:, :-1]) * np.diff(combinedX)[None, :] / 2.0
-        else:
-            interp = interpolate.interp1d(
-                self.x, v, assume_sorted=True, fill_value='extrapolate'
-            )
-            combinedY = np.append(interp(self.outborders), v)[srt]
-            integrand = (combinedY[1:] + combinedY[:-1]) * np.diff(combinedX) / 2.0
-
-        if quad:
-            integrand = np.square(integrand)
-
-        out = (
-            np.add.reduceat(integrand, k[:-1], axis=-1) if k[-1] == combinedX.size - 1
-            else np.add.reduceat(integrand, k, axis=-1)[..., :-1]
-        )
-        return np.sqrt(out) if quad else out
-
-    def _resample_step(self, v, quad=False):
-        """
-        Resample a vector, treating the input as a step function.
-
-        Parameters
-        ----------
-        v : :class:`numpy.ndarray`
-            The vector to resample.
-        quad : bool, optional
-            Sum in quadrature, as required for errors.
-
-        Returns
-        -------
-        :class:`numpy.ndarray`
-            The resampled vector.
-        """
-        # Convert to a step function: repeat each value twice, and each border
-        # twice with the outermost two removed
-        _v = np.repeat(v, 2, axis=1) if self.twod else np.repeat(v, 2)
-        _x = np.repeat(self.xborders, 2)[1:-1]
-
-        # Merge the input coordinates and the output borders
-        indx = np.searchsorted(_x, self.outborders)
-        combinedX = np.insert(_x, indx, self.outborders)
-
-        v_indx = indx.copy()
-        v_indx[indx >= _v.shape[-1]] = -1
-        combinedY = (
-            np.array([np.insert(__v, indx, __v[v_indx]) for __v in _v]) if self.twod
-            else np.insert(_v, indx, _v[v_indx])
-        )
-
-        integrand = (
-            combinedY[:, 1:] * np.diff(combinedX)[None, :] if self.twod
-            else combinedY[1:] * np.diff(combinedX)
-        )
-        if quad:
-            integrand = np.square(integrand)
-
-        border = np.insert(
-            np.zeros(_x.size, dtype=bool), indx, np.ones(self.outborders.size, dtype=bool)
-        )
-        k = np.arange(combinedX.size)[border]
-
-        out = (
-            np.add.reduceat(integrand, k[:-1], axis=-1) if k[-1] == combinedX.size - 1
-            else np.add.reduceat(integrand, k, axis=-1)[..., :-1]
-        )
-        return np.sqrt(out) if quad else out
-
-    def _resample_step_matrix(self):
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_log_spacing(cls, log10lam0, dloglam, npix):
         r"""
-        Build the matrix :math:`\mathbf{A}` such that :math:`y = \mathbf{A} x`.
+        Return a grid uniform in :math:`\log_{10}\lambda` based on its defining
+        parameters.
 
-        Here :math:`x` is the input vector and :math:`y` the resampled one.
-        Expressing the resampling as a matrix is what makes the induced
-        covariance calculable.
+        Parameters
+        ----------
+        log10lam0 : float
+            :math:`\log_{10}` of the first pixel centre, in angstroms.
+        dloglam : float
+            The pixel size in :math:`\log_{10}\lambda`.
+        npix : int
+            The number of pixels.
+
+        Returns
+        -------
+        SpectralGrid
+            The grid.
+        """
+        return cls('log', npix, start=log10lam0, step=dloglam)
+
+    @classmethod
+    def from_linear_spacing(cls, lam0, dlam, npix):
+        """
+        Return a grid uniform in wavelength based on its defining parameters.
+
+        Parameters
+        ----------
+        lam0 : float
+            The first pixel centre, in angstroms.
+        dlam : float
+            The pixel size, in angstroms.
+        npix : int
+            The number of pixels.
+
+        Returns
+        -------
+        SpectralGrid
+            The grid.
+        """
+        return cls('linear', npix, start=lam0, step=dlam)
+
+    @classmethod
+    def from_vector(cls, wave, borders=None, tol=1e-3):
+        """
+        Return the grid a wavelength vector describes, determining its kind.
+
+        A vector found to be regular (see :func:`sampling_type`) is replaced by
+        the uniform grid fit to it, which departs from the input by no more
+        than the tolerance; that is the grid the data were sampled on, and it
+        is free of any rounding in the stored values.  Otherwise the vector is
+        adopted as an irregular grid, with the given borders, or with borders
+        derived from the centres if none are given.
+
+        Borders given for a vector that turns out to be regular must agree with
+        the fitted grid's own borders to within the same tolerance.  They are
+        not silently discarded: borders that disagree carry information the
+        regular description would lose, so they are reported instead.
+
+        Parameters
+        ----------
+        wave : array-like
+            The pixel centres, in angstroms.
+        borders : array-like, optional
+            The pixel borders, in angstroms.  If the wavelengths are irregularly
+            sampled, explicitly providing the coordinates of the pixels borders
+            is strongly recommended; see the class documentation.  If
+            irregularly gridded and the borders are not provided, they are
+            inferred from the wavelength coordinates.
+        tol : float, optional
+            The tolerance, in pixels, used to determine the sampling type; see
+            :func:`sampling_type`.
+
+        Returns
+        -------
+        SpectralGrid
+            The grid.
+
+        Raises
+        ------
+        DC3Error
+            Raised if borders are given for a regularly sampled vector and do
+            not agree with the regular grid's borders.
+        """
+        _wave = _validate_wave(wave)
+        kind = sampling_type(_wave, tol=tol)
+        if kind == 'irregular':
+            return cls('irregular', _wave.size, wave=_wave, borders=borders)
+        start, step, _ = _uniform_fit(np.log10(_wave) if kind == 'log' else _wave)
+        grid = cls(kind, _wave.size, start=start, step=step)
+        if borders is not None:
+            _borders = _validate_wave(borders)
+            if _borders.size != grid.npix + 1:
+                raise DC3Error(f'Expected {grid.npix + 1} pixel borders; got {_borders.size}.')
+            # The departure in pixels, in the grid's own coordinate
+            if kind == 'log':
+                departure = np.absolute(np.log10(_borders) - np.log10(grid.borders)) / step
+            else:
+                departure = np.absolute(_borders - grid.borders) / step
+            limit = _departure_limit(_wave, tol)
+            if np.amax(departure) > limit:
+                sense = 'logarithmically' if kind == 'log' else 'linearly'
+                raise DC3Error(
+                    f'The pixel centres are {sense} sampled, but the borders given depart from '
+                    f'that grid by up to {np.amax(departure):.3g} pixels, more than the '
+                    f'tolerance of {limit:.3g}.  The borders are inconsistent with the centres, '
+                    'or describe pixels a regular grid cannot; construct the grid directly as '
+                    'irregular to keep them.'
+                )
+        return grid
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+    @property
+    def kind(self):
+        """The kind of sampling: ``'log'``, ``'linear'`` or ``'irregular'``."""
+        return self._kind
+
+    @property
+    def npix(self):
+        """The number of pixels."""
+        return self._npix
+
+    @property
+    def is_log(self):
+        r"""Whether the grid is uniform in :math:`\log_{10}\lambda`."""
+        return self._kind == 'log'
+
+    @property
+    def wave(self):
+        """The pixel centres, in angstroms.  Read-only."""
+        return self._wave
+
+    @property
+    def borders(self):
+        """The ``npix + 1`` pixel borders, in angstroms.  Read-only."""
+        return self._borders
+
+    @property
+    def loglam(self):
+        r""":math:`\log_{10}` of the pixel centres.  Read-only."""
+        return self._loglam
+
+    @property
+    def pixel_velocity(self):
+        r"""
+        The width of each pixel in velocity, in km/s.  Read-only.
+
+        :math:`c \ln(\lambda_{i+1/2}/\lambda_{i-1/2})`, from the pixel
+        borders.  Constant, and equal to :attr:`velscale`, for a logarithmic
+        grid; for any other it varies from pixel to pixel.
+        """
+        return self._pixel_velocity
+
+    @property
+    def log10lam0(self):
+        r""":math:`\log_{10}` of the first pixel centre.  Logarithmic grids only."""
+        self._require_log('log10lam0')
+        return self._start
+
+    @property
+    def dloglam(self):
+        r"""The pixel size in :math:`\log_{10}\lambda`.  Logarithmic grids only."""
+        self._require_log('dloglam')
+        return self._step
+
+    @property
+    def velscale(self):
+        """The velocity width of every pixel, in km/s.  Logarithmic grids only."""
+        self._require_log('velscale')
+        return velscale(self._step)
+
+    def _require_log(self, name):
+        """
+        Refuse a quantity that exists only for a logarithmic grid.
+
+        Parameters
+        ----------
+        name : str
+            The quantity asked for.
+
+        Raises
+        ------
+        DC3Error
+            Raised if the grid is not logarithmic.
+        """
+        if self._kind != 'log':
+            raise DC3Error(
+                f'{name} is defined only for a logarithmically sampled grid; this grid is '
+                f'{self._kind}.  Use pixel_velocity for the width of each pixel.'
+            )
+
+    # ------------------------------------------------------------------
+    # Operations
+    # ------------------------------------------------------------------
+    def breaks(self, tol=0.01):
+        r"""
+        Find the jumps in pixel size, where sections sampled differently meet.
+
+        A spliced library is regular within each section and jumps in pixel
+        size where two meet; downstream, such a jump breaks the assumption
+        that the sampling varies smoothly (see
+        :func:`~dc3.templates.prepare`).  A boundary between pixels :math:`i`
+        and :math:`i+1` is flagged if the ratio of their widths departs from
+        one by more than the tolerance,
+
+        .. math::
+
+            \left|\frac{\Delta_{i+1}}{\Delta_i} - 1\right| > {\rm tol},
+
+        with the widths measured in wavelength from :attr:`borders`.  A
+        logarithmic or linear grid has no breaks by definition.  An irregular
+        grid that varies smoothly does not trip the test: even a linear grid
+        described irregularly in log changes pixel size by only about
+        :math:`10^{-4}` per pixel, where a splice changes it by tens of per
+        cent.
+
+        **The tolerance has a float32 floor.**  Wavelengths stored in single
+        precision carry rounding of about :math:`\epsilon_{32}\lambda`, which
+        puts noise of about :math:`\epsilon_{32}\lambda/\Delta\lambda` into the
+        ratio of adjacent widths -- :math:`6\times10^{-4}` at
+        :math:`\lambda/\Delta\lambda = 5000`, but :math:`10^{-2}` at
+        :math:`10^5`.  The tolerance applied is therefore the larger of
+        ``tol`` and four times that, the factor of four allowing that a ratio of
+        two differences of rounded values carries about twice the error of
+        one.  See :func:`sampling_type` for the same floor on a regular grid.
+
+        **A splice may flag more than one boundary.**  If the borders were
+        derived from the pixel centres (see the class documentation), the one
+        just below the last pixel before a splice is misplaced, which changes
+        the widths of the two pixels below the splice and spreads the jump over
+        the two boundaries below it.  Every boundary that exceeds the
+        tolerance is returned, so that nothing is lost; a run of adjacent
+        breaks is one splice.  Supplying the borders avoids this.
+
+        Parameters
+        ----------
+        tol : float, optional
+            The largest fractional change in pixel size between neighbours that
+            is treated as smooth.
 
         Returns
         -------
         :class:`numpy.ndarray`
-            The resampling matrix, of shape ``(nout, nin)``.
+            The index of the first pixel after each flagged boundary, in
+            ascending order; empty if there are none.
         """
-        ny = self.outx.size
-        nx = self.x.size
+        if self._kind != 'irregular':
+            return np.zeros(0, dtype=int)
+        width = np.diff(self._borders)
+        limit = max(tol, 4 * np.finfo(np.float32).eps * np.amax(self._wave / width))
+        return np.where(np.absolute(width[1:] / width[:-1] - 1) > limit)[0] + 1
 
-        _p = np.repeat(np.arange(self.x.size), 2)
-        _x = np.repeat(self.xborders, 2)[1:-1]
+    def shifted(self, npix):
+        r"""
+        Return the grid relabelled by a whole number of pixels.
 
-        indx = np.searchsorted(_x, self.outborders)
-        combinedX = np.insert(_x, indx, self.outborders)
+        Only a logarithmic grid can be shifted this way: a Doppler shift is a
+        translation of :math:`\log\lambda`, so on such a grid it moves every
+        pixel by the same amount.
 
-        p_indx = indx.copy()
-        p_indx[indx >= _p.shape[-1]] = -1
-        combinedP = np.insert(_p, indx, _p[p_indx])
+        Parameters
+        ----------
+        npix : int
+            The number of pixels to move the grid redward; negative moves it
+            blueward.
 
-        border = np.insert(
-            np.zeros(_x.size, dtype=bool), indx, np.ones(self.outborders.size, dtype=bool)
+        Returns
+        -------
+        SpectralGrid
+            The shifted grid.
+        """
+        self._require_log('shifted')
+        return type(self).from_log_spacing(
+            self._start + int(npix) * self._step, self._step, self._npix
         )
-        nn = np.where(np.logical_not(border))[0][::2]
-        k = np.zeros(len(combinedX), dtype=int)
-        k[border] = np.arange(np.sum(border))
-        k[nn - 1] = k[nn - 2]
-        k[nn] = k[nn - 1]
-        start, end = np.where(border)[0][[0, -1]]
 
-        # The fraction of each input pixel falling into each output pixel
-        fraction = np.diff(combinedX[start:end + 1])
-        indx = fraction > 0
-        A = np.zeros((ny, nx), dtype=float)
-        A[k[start:end][indx], combinedP[start:end][indx]] = fraction[indx]
-        return A
+    def __repr__(self):
+        """A short summary of the grid."""
+        w = self.wave
+        if self._kind == 'log':
+            detail = f'dloglam={self._step:.4e}, {self.velscale:.3f} km/s/pix'
+        elif self._kind == 'linear':
+            detail = f'dlam={self._step:.4g} A'
+        else:
+            detail = 'irregular'
+        return f'<{type(self).__name__}: {self._npix} pixels, {w[0]:.2f}-{w[-1]:.2f} A, {detail}>'

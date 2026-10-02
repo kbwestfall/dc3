@@ -8,7 +8,7 @@ import pytest
 from dc3.core import deredshift, sampling
 from dc3.core.velocity import log_velocity
 from dc3.pkg.exceptions import DC3Error
-from dc3.spectra import Spectra
+from dc3.spectra import GalaxySpectra
 
 
 LOG10LAM0 = np.log10(3800.0)
@@ -18,10 +18,11 @@ VELSCALE = sampling.velscale(DLOGLAM)
 
 
 def make_spectra(nspec=3):
-    """Build a spectrum set with distinguishable content in every array."""
+    """Build a galaxy spectrum set with distinguishable content in every array."""
     rng = np.random.default_rng(7)
-    return Spectra(
-        1.0 + 0.1 * rng.standard_normal((nspec, NPIX)), LOG10LAM0, DLOGLAM,
+    return GalaxySpectra(
+        1.0 + 0.1 * rng.standard_normal((nspec, NPIX)),
+        sampling.SpectralGrid.from_log_spacing(LOG10LAM0, DLOGLAM, NPIX),
         ivar=np.full((nspec, NPIX), 100.0),
         idsp=np.linspace(28.0, 32.0, NPIX),
     )
@@ -182,6 +183,7 @@ def test_no_data_moves():
     assert rest.npix == spec.npix, \
         'Pixels were lost; a relabelling truncates nothing, unlike rolling the arrays'
     assert rest.dloglam == spec.dloglam, 'The sampling changed, so this was not a pure shift'
+    assert isinstance(rest, GalaxySpectra), 'De-redshifting lost the GalaxySpectra type'
 
 
 def test_the_original_is_untouched():
